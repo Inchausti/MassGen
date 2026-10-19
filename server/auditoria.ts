@@ -2,37 +2,29 @@
 // cada linha guarda o hash da anterior, e qualquer alteração ou remoção quebra a verificação.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { IncomingHttpHeaders } from 'node:http';
 import { hostname, userInfo } from 'node:os';
-import { config } from './config.ts';
 import { agora, executar, json, todos, um } from './db.ts';
 
-// origem: de onde veio a identidade. 'cloudflare-access' é o e-mail autenticado; 'interface', o nome digitado; 'sistema', o próprio app.
-export interface ContextoUso { usuario: string; maquina: string; origem: 'cloudflare-access' | 'interface' | 'sistema' }
+export type Papel = 'root' | 'operador' | 'leitor';
+
+// Quem está agindo. usuario é o e-mail de quem entrou no app. origem: 'sessao' (login com senha),
+// 'cloudflare-access' (e-mail autenticado pelo Access), 'anonimo' (rota pública, antes do login) ou 'sistema' (o próprio app).
+export interface ContextoUso {
+  usuario: string;
+  maquina: string;
+  origem: 'sessao' | 'cloudflare-access' | 'anonimo' | 'sistema';
+  usuarioId?: string;
+  papel?: Papel;
+  nome?: string | null;
+}
 
 export const contexto = new AsyncLocalStorage<ContextoUso>();
 
 const usuarioDoSistema = (() => { try { return userInfo().username; } catch { return 'desconhecido'; } })();
 export const MAQUINA = hostname();
 
-// Quem está agindo: o e-mail do Cloudflare Access, o nome informado na interface (cabeçalho X-MassGen-Usuario) ou o usuário do sistema.
 export function usuarioAtual(): ContextoUso {
   return contexto.getStore() ?? { usuario: `${usuarioDoSistema} (sistema)`, maquina: MAQUINA, origem: 'sistema' };
-}
-
-const primeiro = (v: string | string[] | undefined): string => (Array.isArray(v) ? v[0] : v ?? '').trim();
-
-// O cabeçalho do Access só vale com MASSGEN_CONFIAR_CLOUDFLARE_ACCESS=true: sem o Access na frente,
-// qualquer um que alcance o app poderia mandá-lo com o e-mail de outra pessoa.
-export function contextoDaRequisicao(cabecalhos: IncomingHttpHeaders): ContextoUso {
-  if (config.confiarCloudflareAccess) {
-    const email = primeiro(cabecalhos['cf-access-authenticated-user-email']).toLowerCase();
-    if (email.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(email)) return { usuario: email, maquina: MAQUINA, origem: 'cloudflare-access' };
-  }
-  const nome = primeiro(cabecalhos['x-massgen-usuario']).slice(0, 80);
-  let decodificado = nome;
-  try { decodificado = decodeURIComponent(nome); } catch { /* usa como veio */ }
-  return { usuario: decodificado ? `${decodificado} · ${usuarioDoSistema}` : usuarioDoSistema, maquina: MAQUINA, origem: 'interface' };
 }
 
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -56,10 +48,10 @@ function limpar(v: unknown): unknown {
   return v;
 }
 
-export function auditar(acao: string, resumo: string, opcoes: { alvoTipo?: string; alvoId?: string; execucaoId?: string; detalhes?: unknown } = {}): void {
+export function auditar(acao: string, resumo: string, opcoes: { alvoTipo?: string; alvoId?: string; execucaoId?: string; detalhes?: unknown; usuario?: string } = {}): void {
   const quem = usuarioAtual();
   const linha = {
-    em: agora(), usuario: quem.usuario, maquina: quem.maquina, acao, alvo_tipo: opcoes.alvoTipo ?? null, alvo_id: opcoes.alvoId ?? null,
+    em: agora(), usuario: opcoes.usuario ?? quem.usuario, maquina: quem.maquina, acao, alvo_tipo: opcoes.alvoTipo ?? null, alvo_id: opcoes.alvoId ?? null,
     execucao_id: opcoes.execucaoId ?? null, resumo, detalhes: JSON.stringify(limpar(opcoes.detalhes ?? {})),
   };
   const anterior = ultimoHash('auditoria');

@@ -1,0 +1,135 @@
+# Verifica a implantação num Linux de verdade, seguindo o README ("Hospedar para o time"):
+# Node 24 pelo NodeSource, o app em /opt/massgen com o usuário massgen, as units do systemd rodando,
+# backup e restauração com um banco real e o cloudflared validando o config.yml gerado do modelo.
+# Roda em x64 e em ARM, a arquitetura da VM Ampere A1 da Oracle Cloud.
+name: Verificar implantação
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verificar-implantacao-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Ubuntu 24.04 ${{ matrix.arquitetura }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arquitetura: x64
+          - runner: ubuntu-24.04-arm
+            arquitetura: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pacotes da VM (passo 2 do README)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git sqlite3 curl gettext-base jq
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          # O Node do NodeSource, em /usr/bin, vale para os passos seguintes (o runner traz outro Node no PATH).
+          echo /usr/bin >> "$GITHUB_PATH"
+          /usr/bin/node --version | grep -E '^v(2[4-9]|[3-9][0-9])\.'
+          dpkg --print-architecture
+
+      - name: Dependências, tipos, build e testes
+        run: |
+          node --version
+          npm ci
+          npm run typecheck
+          npm run build
+          npm test
+
+      - name: Instalar como na VM (passos 2 a 4 do README)
+        run: |
+          sudo useradd --system --create-home --home-dir /var/lib/massgen --shell /usr/sbin/nologin massgen
+          sudo mkdir -p /opt/massgen && sudo chown massgen:massgen /opt/massgen
+          # No lugar do git clone: o mesmo commit, sem node_modules nem build da etapa anterior.
+          git archive HEAD | sudo -u massgen tar -x -C /opt/massgen
+          cd /opt/massgen
+          sudo -u massgen -H npm ci
+          sudo -u massgen -H npm run build
+          sudo -u massgen mkdir -p data
+          sudo -u massgen cp .env.example .env
+          sudo -u massgen chmod 600 .env
+          sudo -u massgen sed -i \
+            -e 's#^MASSGEN_HOST=.*#MASSGEN_HOST=127.0.0.1#' \
+            -e 's#^MASSGEN_ROOTS=.*#MASSGEN_ROOTS=ci.root@exemplo.com.br#' \
+            -e 's#^MASSGEN_URL_PUBLICA=.*#MASSGEN_URL_PUBLICA=https://massgen.exemplo.com.br#' \
+            .env
+          sudo grep -E '^(MASSGEN_HOST|MASSGEN_ROOTS|MASSGEN_URL_PUBLICA|ALLOWED_DESTINATION_DOMAINS)=' .env
+
+      - name: Units do systemd (systemd-analyze verify)
+        run: |
+          sudo cp deploy/massgen.service deploy/massgen-backup.service deploy/massgen-backup.timer /etc/systemd/system/
+          sudo systemctl daemon-reload
+          saida="$(systemd-analyze verify /etc/systemd/system/massgen.service /etc/systemd/system/massgen-backup.service /etc/systemd/system/massgen-backup.timer 2>&1)" || { echo "$saida"; exit 1; }
+          echo "${saida:-Nenhum aviso.}"
+          if grep -q massgen <<<"$saida"; then echo "::error::O systemd-analyze apontou problemas nas units do MassGen."; exit 1; fi
+
+      - name: Subir pelo systemd (passo 5) e o link de primeiro acesso (passo 7)
+        run: |
+          sudo systemctl enable --now massgen
+          for _ in $(seq 1 75); do curl -fsS http://127.0.0.1:3000/api/saude >/dev/null 2>&1 && break; sleep 0.2; done
+          curl -fsS http://127.0.0.1:3000/api/saude | grep -q '"ok":true'
+          systemctl is-active massgen
+          test "$(systemctl show -p User --value massgen)" = massgen
+          sudo journalctl -u massgen --no-pager
+          sudo journalctl -u massgen --no-pager | grep -E 'Primeiro acesso de ci\.root@exemplo\.com\.br: https://massgen\.exemplo\.com\.br/convite/[A-Za-z0-9_-]{43}$'
+          # Com MASSGEN_HOST=127.0.0.1, o app não responde pelo IP da máquina.
+          ip="$(hostname -I | awk '{print $1}')"
+          if curl -fsS --max-time 3 "http://$ip:3000/api/saude"; then echo "::error::O app respondeu em $ip, fora do 127.0.0.1."; exit 1; fi
+          # Sem login, a API recusa.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/destinos)" = 401
+
+      - name: Backup e restauração com um banco real (passo 9)
+        run: |
+          sudo mkdir -p /var/backups/massgen
+          sudo chown massgen:massgen /var/backups/massgen
+          sudo chmod 700 /var/backups/massgen
+          sudo systemctl enable --now massgen-backup.timer
+          systemctl list-timers massgen-backup.timer --no-pager
+          nohup node mock/servidor.ts >"$RUNNER_TEMP/mock.log" 2>&1 &
+          for _ in $(seq 1 50); do grep -q 'API falsa no ar' "$RUNNER_TEMP/mock.log" && break; sleep 0.2; done
+          bash .github/scripts/backup-restauracao.sh
+
+      - name: cloudflared e o config.yml gerado do modelo (passo 6)
+        run: |
+          sudo mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+          sudo apt-get update && sudo apt-get install -y cloudflared
+          cloudflared --version
+          export TUNEL_ID=6ff42ae2-765d-4adf-8112-31c55c1551ef
+          export DOMINIO="$(sudo sed -n 's#^MASSGEN_URL_PUBLICA=https://\([^/]*\).*#\1#p' /opt/massgen/.env)"
+          echo "Túnel $TUNEL_ID para $DOMINIO"
+          test "$DOMINIO" = massgen.exemplo.com.br
+          sudo mkdir -p /etc/cloudflared
+          envsubst '$DOMINIO $TUNEL_ID' < /opt/massgen/deploy/cloudflared/config.yml | sudo tee /etc/cloudflared/config.yml
+          if grep -q '\${' /etc/cloudflared/config.yml; then echo "::error::Sobrou variável sem trocar no config.yml."; exit 1; fi
+          sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+          sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress rule "https://$DOMINIO/api/saude" | tee "$RUNNER_TEMP/regra.txt"
+          grep -q 'http://127.0.0.1:3000' "$RUNNER_TEMP/regra.txt"
+          sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress rule "https://outro.exemplo.com.br/" | tee "$RUNNER_TEMP/outra.txt"
+          grep -q 'http_status:404' "$RUNNER_TEMP/outra.txt"
+          # A camada opcional do Cloudflare Access, descomentada como manda deploy/cloudflare-access.md.
+          sed -E 's/^    # (originRequest:|  access:|    required:|    teamName:|    audTag:|      - )/    \1/' /etc/cloudflared/config.yml > "$RUNNER_TEMP/com-access.yml"
+          cat "$RUNNER_TEMP/com-access.yml"
+          grep -q '^        required: true' "$RUNNER_TEMP/com-access.yml"
+          cloudflared tunnel --config "$RUNNER_TEMP/com-access.yml" ingress validate
+
+      - name: Logs do serviço
+        if: always()
+        run: sudo journalctl -u massgen -u massgen-backup --no-pager | tail -n 200

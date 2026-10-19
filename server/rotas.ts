@@ -3,7 +3,10 @@
 import { Roteador, ErroHttp, arquivo, criado, exigir } from './http.ts';
 import { config } from './config.ts';
 import { todos, um } from './db.ts';
-import { auditar, acoesAuditadas, listarAuditoria, usuarioAtual, verificarIntegridade } from './auditoria.ts';
+import { auditar, acoesAuditadas, listarAuditoria, verificarIntegridade } from './auditoria.ts';
+import {
+  aceitarConvite, alterarUsuario, cookieSessao, entrar, eu, gerarLink, identificar, lerConvite, listarUsuarios, preCadastrar, sair, trocarSenha,
+} from './usuarios.ts';
 import { catalogoGeradores } from './core/geradores.ts';
 import { exportarPacote, instalarPacote, listarPacotes, removerPacote } from './servicos/pacotes.ts';
 import {
@@ -23,6 +26,7 @@ import { linhaDoTempo, listarRequisicoes, obterRequisicao, painelExecucao } from
 import { pacoteDeEvidencias, trilhaDaExecucao } from './servicos/rastreabilidade.ts';
 
 export const rotas = new Roteador();
+rotas.identificar = identificar;
 const num = (v: string | null) => (v === null || v === '' ? undefined : Number(v));
 const txt = (v: string | null) => v || undefined;
 
@@ -39,11 +43,43 @@ function mudancas(antes: Record<string, unknown>, depois: Record<string, unknown
 const exe = (id: string) => obterExecucaoLinha(id).codigo as string;
 
 // ---------------------------------------------------------------- geral
-rotas.get('/api/saude', () => ({ ok: true }));
-rotas.get('/api/config', () => ({
+rotas.get('/api/saude', () => ({ ok: true }), { publico: true });
+rotas.get('/api/config', ({ quem }) => ({
   dominiosPermitidos: config.dominiosPermitidos, dominiosBloqueados: config.dominiosBloqueados, acoes: ACOES, segredosPorAutenticacao: SEGREDOS_POR_AUTH,
-  usuario: usuarioAtual(),
+  usuario: eu(quem!),
 }));
+
+// ---------------------------------------------------------------- sessão, convites e usuários
+// Quem está logado (ou null). Pública: a interface usa para decidir entre a tela de login e o app.
+// bloqueio: o Cloudflare Access autenticou um e-mail que não tem acesso ao MassGen (a tela mostra o motivo em vez do login).
+rotas.get('/api/sessao', ({ req, quem }) => {
+  let bloqueio: string | null = null;
+  if (!quem) { try { identificar(req); } catch (e) { bloqueio = (e as Error).message; } }
+  return { usuario: quem ? eu(quem) : null, cloudflareAccess: config.confiarCloudflareAccess, bloqueio };
+}, { publico: true });
+rotas.post('/api/sessao', ({ corpo, req }) => {
+  const r = entrar(corpo?.email, corpo?.senha, req);
+  return { __resposta: true, status: 200, corpo: JSON.stringify({ usuario: r.usuario }), cabecalhos: { 'content-type': 'application/json; charset=utf-8', 'set-cookie': cookieSessao(r.token) } };
+}, { publico: true });
+rotas.delete('/api/sessao', ({ req, quem }) => {
+  sair(req, quem);
+  return { __resposta: true, status: 204, corpo: '', cabecalhos: { 'set-cookie': cookieSessao(null) } };
+}, { publico: true });
+rotas.post('/api/sessao/senha', ({ corpo, req, quem }) => {
+  const token = trocarSenha(quem!, corpo?.atual, corpo?.nova, req);
+  return { __resposta: true, status: 200, corpo: JSON.stringify({ ok: true }), cabecalhos: { 'content-type': 'application/json; charset=utf-8', 'set-cookie': cookieSessao(token) } };
+}, { leitorPode: true });
+rotas.get('/api/convites/:token', ({ params }) => lerConvite(params.token), { publico: true });
+rotas.post('/api/convites/:token', ({ params, corpo, req }) => {
+  const r = aceitarConvite(params.token, corpo?.nome, corpo?.senha, req);
+  return { __resposta: true, status: 200, corpo: JSON.stringify({ usuario: r.usuario }), cabecalhos: { 'content-type': 'application/json; charset=utf-8', 'set-cookie': cookieSessao(r.token) } };
+}, { publico: true });
+
+const SO_ROOT = { papeis: ['root' as const] };
+rotas.get('/api/usuarios', () => listarUsuarios(), SO_ROOT);
+rotas.post('/api/usuarios', ({ corpo, quem }) => criado(preCadastrar(quem!, corpo ?? {})), SO_ROOT);
+rotas.patch('/api/usuarios/:id', ({ params, corpo, quem }) => alterarUsuario(quem!, params.id, corpo ?? {}), SO_ROOT);
+rotas.post('/api/usuarios/:id/link', ({ params, quem }) => gerarLink(quem!, params.id), SO_ROOT);
 rotas.get('/api/catalogo/geradores', () => catalogoGeradores());
 rotas.get('/api/painel', () => ({
   destinos: listarDestinos().map((d) => ({ id: d.id, nome: d.nome, tipoAmbiente: d.tipoAmbiente, baseUrl: d.baseUrl, ultimoTeste: d.ultimoTeste, ativo: d.ativo })),
@@ -105,7 +141,7 @@ rotas.post('/api/modelos/:id/restaurar', ({ params }) => {
   auditar('modelo.restaurar', `Modelo ${m.nome} restaurado para a versão do pacote`, { alvoTipo: 'modelo', alvoId: m.id });
   return m;
 });
-rotas.post('/api/modelos/:id/exemplo', ({ params, corpo }) => exemplo(params.id, { definicao: corpo?.definicao, destinoId: corpo?.destinoId, semente: corpo?.semente }));
+rotas.post('/api/modelos/:id/exemplo', ({ params, corpo }) => exemplo(params.id, { definicao: corpo?.definicao, destinoId: corpo?.destinoId, semente: corpo?.semente }), { leitorPode: true });
 
 // ---------------------------------------------------------------- destinos e estrutura de APIs
 rotas.get('/api/destinos', () => listarDestinos());

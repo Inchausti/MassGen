@@ -33,6 +33,17 @@ export const config = {
   dominiosPermitidos: lista(process.env.ALLOWED_DESTINATION_DOMAINS || 'localhost,127.0.0.1'),
   dominiosBloqueados: lista(process.env.BLOCKED_DESTINATION_DOMAINS),
   chaveMestra: process.env.MASSGEN_MASTER_KEY || '',
+  // Usuários root criados na subida, separados por vírgula. Os demais entram por pré-cadastro e convite.
+  // Fica no .env, fora do Git: o repositório é público e não guarda e-mail de ninguém.
+  roots: lista(process.env.MASSGEN_ROOTS),
+  // Endereço público do app: monta os links de primeiro acesso e de convite. É o único lugar do app com o domínio.
+  urlPublica: (process.env.MASSGEN_URL_PUBLICA?.trim() || `http://localhost:${Number(process.env.PORT || 3000)}`).replace(/\/+$/, ''),
+  // Cookie de sessão só por HTTPS. Liga sozinho quando a URL pública é https.
+  cookieSeguro: process.env.MASSGEN_COOKIE_SEGURO
+    ? ligado(process.env.MASSGEN_COOKIE_SEGURO)
+    : (process.env.MASSGEN_URL_PUBLICA ?? '').trim().toLowerCase().startsWith('https://'),
+  // Duração da sessão, em horas.
+  sessaoHoras: Number(process.env.MASSGEN_SESSAO_HORAS || 12),
 };
 
 function casa(host: string, regra: string): boolean {

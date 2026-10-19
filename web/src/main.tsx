@@ -1,9 +1,11 @@
-import { StrictMode, useEffect, useState, type ReactNode } from 'react';
+import { StrictMode, useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './estilos.css';
 import { ProvedorRota, Link, useRota, casar } from './rotas.tsx';
-import { ProvedorAvisos, Modal } from './ui.tsx';
-import { definirUsuarioLocal, get, usuarioLocal } from './api.ts';
+import { CaixaErro, Campo, Carregando, Modal, ProvedorAvisos, useAcao } from './ui.tsx';
+import { EVENTO_SESSAO, del, get, post } from './api.ts';
+import { ContextoSessao, ROTULO_PAPEL, useSessao, type UsuarioSessao } from './sessao.tsx';
+import { AceitarConvite, Entrar, SemAcesso } from './paginas/Entrar.tsx';
 import { Painel } from './paginas/Painel.tsx';
 import { Destinos, NovoDestino } from './paginas/Destinos.tsx';
 import { DestinoDetalhe } from './paginas/Destino.tsx';
@@ -14,6 +16,7 @@ import { Cenarios, CenarioEditor } from './paginas/Cenarios.tsx';
 import { Execucoes } from './paginas/Execucoes.tsx';
 import { ExecucaoDetalhe } from './paginas/Execucao.tsx';
 import { Auditoria } from './paginas/Auditoria.tsx';
+import { Usuarios } from './paginas/Usuarios.tsx';
 
 const I = (d: string) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
@@ -27,9 +30,10 @@ const ICONES = {
   cenarios: I('M5 3v18M5 5h12l-2 4 2 4H5'),
   execucoes: I('M5 3l14 9-14 9V3z'),
   auditoria: I('M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4zM9 12l2 2 4-4'),
+  usuarios: I('M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a7 7 0 0 1 14 0v1M16 3.5a4 4 0 0 1 0 7M22 21v-1a7 7 0 0 0-4-6.3'),
 };
 
-const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string }[] = [
+const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string; soRoot?: boolean }[] = [
   { para: '/', rotulo: 'Painel', icone: ICONES.painel, grupo: '' },
   { para: '/destinos', rotulo: 'Destinos', icone: ICONES.destinos, grupo: 'Configurar' },
   { para: '/pacotes', rotulo: 'Pacotes', icone: ICONES.pacotes, grupo: 'Configurar' },
@@ -38,9 +42,10 @@ const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string }[] =
   { para: '/cenarios', rotulo: 'Cenários', icone: ICONES.cenarios, grupo: 'Executar' },
   { para: '/execucoes', rotulo: 'Execuções', icone: ICONES.execucoes, grupo: 'Executar' },
   { para: '/auditoria', rotulo: 'Auditoria', icone: ICONES.auditoria, grupo: 'Controlar' },
+  { para: '/usuarios', rotulo: 'Usuários', icone: ICONES.usuarios, grupo: 'Controlar', soRoot: true },
 ];
 
-const PAGINAS: { padrao: string; render: (p: Record<string, string>) => ReactNode }[] = [
+const PAGINAS: { padrao: string; render: (p: Record<string, string>) => ReactNode; soRoot?: boolean }[] = [
   { padrao: '/', render: () => <Painel /> },
   { padrao: '/destinos', render: () => <Destinos /> },
   { padrao: '/destinos/novo', render: () => <NovoDestino /> },
@@ -54,6 +59,7 @@ const PAGINAS: { padrao: string; render: (p: Record<string, string>) => ReactNod
   { padrao: '/execucoes', render: () => <Execucoes /> },
   { padrao: '/execucoes/:id', render: (p) => <ExecucaoDetalhe id={p.id} /> },
   { padrao: '/auditoria', render: () => <Auditoria /> },
+  { padrao: '/usuarios', render: () => <Usuarios />, soRoot: true },
 ];
 
 type Tema = 'sistema' | 'claro' | 'escuro';
@@ -62,58 +68,62 @@ function lerTema(): Tema {
   try { return (localStorage.getItem('massgen.tema') as Tema) || 'sistema'; } catch { return 'sistema'; }
 }
 
-interface Identidade { usuario: string; origem: 'cloudflare-access' | 'interface' | 'sistema' }
-
-// Atrás do Cloudflare Access, quem entra na trilha é o e-mail autenticado: o nome digitado não vale e não é pedido.
-function Operador() {
-  const [identidade, setIdentidade] = useState<Identidade | null>(null);
-  const [nome, setNome] = useState(usuarioLocal());
-  const [editando, setEditando] = useState(false);
-  const [rascunho, setRascunho] = useState(nome);
-  useEffect(() => {
-    get<{ usuario: Identidade }>('/config')
-      .then((c) => {
-        setIdentidade(c.usuario);
-        if (c.usuario.origem !== 'cloudflare-access' && !usuarioLocal()) setEditando(true);
-      })
-      .catch(() => { if (!usuarioLocal()) setEditando(true); });
-  }, []);
-  const salvar = () => {
-    definirUsuarioLocal(rascunho);
-    setNome(rascunho.trim());
-    setEditando(false);
+function TrocarSenha({ aoFechar }: { aoFechar: () => void }) {
+  const { usuario } = useSessao();
+  const [atual, setAtual] = useState('');
+  const [nova, setNova] = useState('');
+  const [confirma, setConfirma] = useState('');
+  const acao = useAcao();
+  const diferentes = confirma.length > 0 && confirma !== nova;
+  const salvar = async (e?: FormEvent) => {
+    e?.preventDefault();
+    if (diferentes || nova.length < 10) return;
+    if ((await acao.executar(() => post('/sessao/senha', { atual, nova }), 'Senha trocada. As outras sessões abertas foram encerradas.')) !== undefined) aoFechar();
   };
-  if (identidade?.origem === 'cloudflare-access') {
-    return (
-      <div className="operador" title="Identificado pelo Cloudflare Access: este e-mail entra na trilha de auditoria">
-        👤 <span>{identidade.usuario}</span>
-      </div>
-    );
-  }
   return (
-    <>
-      <button className="botao fantasma pequeno" style={{ justifyContent: 'flex-start' }} onClick={() => { setRascunho(nome); setEditando(true); }} title="Quem aparece na trilha de auditoria">
-        👤 {nome || 'Informar operador'}
-      </button>
-      {editando && (
-        <Modal
-          titulo="Quem está usando o MassGen?"
-          aoFechar={() => setEditando(false)}
-          rodape={<><button className="botao" onClick={() => setEditando(false)}>Depois</button><button className="botao primario" disabled={!rascunho.trim()} onClick={salvar}>Salvar</button></>}
-        >
-          <p>O nome entra na trilha de auditoria de cada ação e de cada envio, junto com o usuário do sistema e a máquina.</p>
-          <div className="campo">
-            <label htmlFor="operador">Seu nome</label>
-            <input id="operador" type="text" autoFocus value={rascunho} onChange={(e) => setRascunho(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && rascunho.trim() && salvar()} />
-          </div>
-        </Modal>
+    <Modal
+      titulo="Trocar a senha"
+      aoFechar={aoFechar}
+      rodape={<><button className="botao" onClick={aoFechar}>Cancelar</button><button className="botao primario" disabled={acao.ocupado || nova.length < 10 || diferentes || !confirma} onClick={() => salvar()}>Salvar</button></>}
+    >
+      <CaixaErro erro={acao.erro} />
+      <form className="pilha" onSubmit={salvar}>
+        <input type="text" autoComplete="username" value={usuario.email} readOnly hidden />
+        <Campo rotulo="Senha atual"><input type="password" autoComplete="current-password" autoFocus value={atual} onChange={(e) => setAtual(e.target.value)} /></Campo>
+        <Campo rotulo="Senha nova" ajuda="Pelo menos 10 caracteres."><input type="password" autoComplete="new-password" value={nova} onChange={(e) => setNova(e.target.value)} /></Campo>
+        <Campo rotulo="Repita a senha nova" erro={diferentes ? 'As senhas não são iguais.' : undefined}><input type="password" autoComplete="new-password" value={confirma} onChange={(e) => setConfirma(e.target.value)} /></Campo>
+        <button type="submit" hidden />
+      </form>
+    </Modal>
+  );
+}
+
+// Quem está logado, com o papel. Pelo Cloudflare Access não há "Sair": a identidade vem do Access, não do cookie do app.
+function UsuarioLogado() {
+  const { usuario, sair } = useSessao();
+  const [trocando, setTrocando] = useState(false);
+  const viaAccess = usuario.origem === 'cloudflare-access';
+  return (
+    <div className="usuario-bloco">
+      <div className="usuario-id" title={viaAccess ? 'Identificado pelo Cloudflare Access' : 'Este e-mail entra na trilha de auditoria'}>
+        <span className="usuario-nome">{usuario.nome || usuario.email}</span>
+        {usuario.nome && <span className="usuario-email">{usuario.email}</span>}
+        <span className={`selo sem-ponto ${usuario.papel === 'root' ? 'destaque' : usuario.papel === 'leitor' ? 'info' : ''}`}>{ROTULO_PAPEL[usuario.papel]}{viaAccess ? ' · Access' : ''}</span>
+      </div>
+      {!viaAccess && (
+        <div className="linha-flex" style={{ gap: 4 }}>
+          <button className="botao fantasma pequeno" onClick={() => setTrocando(true)}>Trocar senha</button>
+          <button className="botao fantasma pequeno" onClick={sair}>Sair</button>
+        </div>
       )}
-    </>
+      {trocando && <TrocarSenha aoFechar={() => setTrocando(false)} />}
+    </div>
   );
 }
 
 function Lateral() {
   const { caminho } = useRota();
+  const { usuario } = useSessao();
   const [tema, setTema] = useState<Tema>(lerTema());
   useEffect(() => {
     if (tema === 'sistema') delete document.documentElement.dataset.tema;
@@ -128,7 +138,7 @@ function Lateral() {
         <div className="marca-logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--sobre-destaque)" strokeWidth="2.6" strokeLinejoin="round" aria-hidden="true"><path d="M5 18V6l7 6 7-6v12" /></svg></div>
         <div><div className="marca-nome">MassGen</div><div className="marca-sub">Gerador de massa de dados</div></div>
       </div>
-      {NAV.map((n) => {
+      {NAV.filter((n) => !n.soRoot || usuario.papel === 'root').map((n) => {
         const titulo = n.grupo && n.grupo !== grupo ? <div className="nav-titulo">{(grupo = n.grupo)}</div> : null;
         return (
           <div key={n.para} style={{ display: 'contents' }}>
@@ -138,7 +148,7 @@ function Lateral() {
         );
       })}
       <div className="lateral-rodape">
-        <Operador />
+        <UsuarioLogado />
         <select aria-label="Tema" value={tema} onChange={(e) => setTema(e.target.value as Tema)} style={{ fontSize: 12 }}>
           <option value="sistema">Tema do sistema</option>
           <option value="claro">Tema claro</option>
@@ -151,21 +161,72 @@ function Lateral() {
 
 function Conteudo() {
   const { caminho } = useRota();
+  const { usuario } = useSessao();
+  const leitor = usuario.papel === 'leitor' && (
+    <div className="pagina" style={{ marginBottom: 18 }}>
+      <div className="alerta info"><div>Seu papel é <strong>leitor</strong>: você consulta tudo, mas não altera nada nem envia massa. Para mudar, fale com um root.</div></div>
+    </div>
+  );
   for (const p of PAGINAS) {
     const params = casar(p.padrao, caminho);
-    if (params) return <>{p.render(params)}</>;
+    if (!params) continue;
+    if (p.soRoot && usuario.papel !== 'root') break;
+    return <>{leitor}{p.render(params)}</>;
   }
   return <div className="pagina"><h1>Página não encontrada</h1><p><Link para="/">Voltar ao painel</Link></p></div>;
+}
+
+interface EstadoSessao { usuario: UsuarioSessao | null; bloqueio: string | null }
+
+// Decide entre o aceite de convite, a tela de entrada e o app. Qualquer 401 da API volta para a entrada.
+function Portao() {
+  const { caminho, navegar } = useRota();
+  const [estado, setEstado] = useState<EstadoSessao | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const carregar = useCallback(async () => {
+    try {
+      const s = await get<EstadoSessao>('/sessao');
+      setEstado({ usuario: s.usuario, bloqueio: s.bloqueio ?? null });
+    } catch {
+      setEstado({ usuario: null, bloqueio: null });
+    }
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+  useEffect(() => {
+    const encerrada = () => {
+      setAviso('Sua sessão terminou. Entre de novo para continuar.');
+      setEstado({ usuario: null, bloqueio: null });
+    };
+    window.addEventListener(EVENTO_SESSAO, encerrada);
+    return () => window.removeEventListener(EVENTO_SESSAO, encerrada);
+  }, []);
+  const sair = useCallback(async () => {
+    try { await del('/sessao'); } catch { /* o cookie some de qualquer jeito */ }
+    setAviso(null);
+    setEstado({ usuario: null, bloqueio: null });
+    navegar('/', true);
+  }, [navegar]);
+  const entrou = useCallback(() => { setAviso(null); carregar(); }, [carregar]);
+
+  const convite = casar('/convite/:token', caminho);
+  if (convite) return <AceitarConvite token={convite.token} aoEntrar={() => { navegar('/', true); entrou(); }} />;
+  if (!estado) return <div className="porta"><Carregando /></div>;
+  if (!estado.usuario) return estado.bloqueio ? <SemAcesso mensagem={estado.bloqueio} /> : <Entrar aoEntrar={entrou} aviso={aviso} />;
+  return (
+    <ContextoSessao.Provider value={{ usuario: estado.usuario, sair, recarregar: carregar }}>
+      <div className="app">
+        <Lateral />
+        <main className="conteudo"><Conteudo /></main>
+      </div>
+    </ContextoSessao.Provider>
+  );
 }
 
 function App() {
   return (
     <ProvedorRota>
       <ProvedorAvisos>
-        <div className="app">
-          <Lateral />
-          <main className="conteudo"><Conteudo /></main>
-        </div>
+        <Portao />
       </ProvedorAvisos>
     </ProvedorRota>
   );

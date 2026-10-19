@@ -1,23 +1,23 @@
-# Exemplo de configuração do cloudflared (túnel criado pela linha de comando).
-# Copie para /etc/cloudflared/config.yml e troque os quatro valores marcados.
-# Passo a passo completo: "Hospedar para o time", no README, e deploy/cloudflare-access.md.
+# Modelo da configuração do cloudflared (túnel criado pela linha de comando).
+# Não edite à mão: o README gera /etc/cloudflared/config.yml com o envsubst, que troca as variáveis TUNEL_ID
+# (o UUID do túnel) e DOMINIO (o domínio de MASSGEN_URL_PUBLICA, no .env). Passo a passo: "Hospedar para o time", no README.
 
-# UUID que o "cloudflared tunnel create massgen" mostrou, e o arquivo de credenciais que ele gravou.
-tunnel: 00000000-0000-0000-0000-000000000000                                     # TROCAR
-credentials-file: /etc/cloudflared/00000000-0000-0000-0000-000000000000.json    # TROCAR
+tunnel: ${TUNEL_ID}
+credentials-file: /etc/cloudflared/${TUNEL_ID}.json
 
 ingress:
-  - hostname: massgen.empresa.com.br                                             # TROCAR
+  - hostname: ${DOMINIO}
     # O app escuta só em 127.0.0.1 (MASSGEN_HOST no .env): o cloudflared, na mesma VM, é o único caminho até ele.
     # Use 127.0.0.1, e não localhost, que pode resolver para ::1.
     service: http://127.0.0.1:3000
-    originRequest:
-      # Defesa extra: o cloudflared recusa toda requisição sem um token válido desta aplicação do Access.
-      # Se o Access for desligado por engano no painel, o app não fica aberto: as requisições param aqui.
-      access:
-        required: true
-        teamName: sua-equipe                  # TROCAR: o "sua-equipe" de sua-equipe.cloudflareaccess.com
-        audTag:
-          - COLE_AQUI_O_AUD_TAG_DA_APLICACAO  # TROCAR: Application Audience (AUD) Tag da aplicação no Access
+    # Camada opcional (deploy/cloudflare-access.md): com o Cloudflare Access ligado, descomente as linhas abaixo.
+    # O cloudflared passa a recusar toda requisição sem um token válido da aplicação do Access; se o Access for
+    # desligado no painel por engano, as requisições param aqui.
+    # originRequest:
+    #   access:
+    #     required: true
+    #     teamName: sua-equipe                  # o "sua-equipe" de sua-equipe.cloudflareaccess.com
+    #     audTag:
+    #       - COLE_AQUI_O_AUD_TAG_DA_APLICACAO  # Application Audience (AUD) Tag da aplicação no Access
   # Qualquer outro endereço que chegue ao túnel recebe 404.
   - service: http_status:404

@@ -206,6 +206,40 @@ const MIGRACOES: string[] = [
   CREATE INDEX auditoria_alvo ON auditoria (alvo_tipo, alvo_id);
   CREATE INDEX auditoria_execucao ON auditoria (execucao_id);
   `,
+  // 3 — usuários, sessões e convites
+  `
+  CREATE TABLE usuarios (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    nome TEXT,
+    papel TEXT NOT NULL CHECK (papel IN ('root', 'operador', 'leitor')),
+    status TEXT NOT NULL CHECK (status IN ('convidado', 'ativo', 'desativado')),
+    senha_hash TEXT,
+    criado_por TEXT NOT NULL,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL,
+    ultimo_acesso TEXT
+  );
+  CREATE TABLE sessoes (
+    token_hash TEXT PRIMARY KEY,
+    usuario_id TEXT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    criada_em TEXT NOT NULL,
+    expira_em TEXT NOT NULL,
+    ultimo_uso TEXT,
+    ip TEXT
+  );
+  CREATE INDEX sessoes_usuario ON sessoes (usuario_id);
+  CREATE TABLE convites (
+    token_hash TEXT PRIMARY KEY,
+    usuario_id TEXT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL CHECK (tipo IN ('primeiro_acesso', 'convite', 'redefinicao')),
+    criado_por TEXT NOT NULL,
+    criado_em TEXT NOT NULL,
+    expira_em TEXT NOT NULL,
+    usado_em TEXT
+  );
+  CREATE INDEX convites_usuario ON convites (usuario_id);
+  `,
 ];
 
 function migrar(): void {

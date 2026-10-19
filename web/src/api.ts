@@ -1,4 +1,4 @@
-// Cliente da API do app. Toda chamada leva o nome do operador, que entra na trilha de auditoria.
+// Cliente da API do app. A sessão vai no cookie (HttpOnly); quem está logado entra na trilha de auditoria.
 
 export class ErroApi extends Error {
   status: number;
@@ -10,27 +10,15 @@ export class ErroApi extends Error {
   }
 }
 
-const CHAVE_USUARIO = 'massgen.usuario';
-
-export function usuarioLocal(): string {
-  try { return localStorage.getItem(CHAVE_USUARIO) ?? ''; } catch { return ''; }
-}
-
-export function definirUsuarioLocal(nome: string): void {
-  try { localStorage.setItem(CHAVE_USUARIO, nome.trim()); } catch { /* sem armazenamento: segue sem nome */ }
-}
-
-function cabecalhos(extra: Record<string, string> = {}): Record<string, string> {
-  const u = usuarioLocal();
-  return { ...(u ? { 'x-massgen-usuario': encodeURIComponent(u) } : {}), ...extra };
-}
+// Sessão expirada ou encerrada: a interface volta para a tela de login.
+export const EVENTO_SESSAO = 'massgen:sessao-encerrada';
 
 export async function api<T = any>(metodo: string, rota: string, corpo?: unknown): Promise<T> {
   let r: Response;
   try {
     r = await fetch(`/api${rota}`, {
       method: metodo,
-      headers: cabecalhos(corpo === undefined ? {} : { 'content-type': 'application/json' }),
+      headers: corpo === undefined ? {} : { 'content-type': 'application/json' },
       body: corpo === undefined ? undefined : JSON.stringify(corpo),
     });
   } catch {
@@ -39,6 +27,7 @@ export async function api<T = any>(metodo: string, rota: string, corpo?: unknown
   const texto = await r.text();
   let j: any;
   try { j = texto ? JSON.parse(texto) : undefined; } catch { j = texto; }
+  if (r.status === 401 && !rota.startsWith('/sessao')) window.dispatchEvent(new Event(EVENTO_SESSAO));
   if (!r.ok) throw new ErroApi(r.status, j?.erro ?? `Erro ${r.status}`, j?.detalhes);
   return j as T;
 }
@@ -49,9 +38,10 @@ export const put = <T = any>(rota: string, corpo?: unknown) => api<T>('PUT', rot
 export const patch = <T = any>(rota: string, corpo?: unknown) => api<T>('PATCH', rota, corpo ?? {});
 export const del = <T = any>(rota: string) => api<T>('DELETE', rota);
 
-// Download pela API (com o cabeçalho do operador, para a trilha registrar quem baixou).
+// Download pela API (com o cookie da sessão, para a trilha registrar quem baixou).
 export async function baixar(rota: string): Promise<void> {
-  const r = await fetch(`/api${rota}`, { headers: cabecalhos() });
+  const r = await fetch(`/api${rota}`);
+  if (r.status === 401) window.dispatchEvent(new Event(EVENTO_SESSAO));
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     throw new ErroApi(r.status, j.erro ?? `Erro ${r.status}`, j.detalhes);

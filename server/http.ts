@@ -1,6 +1,6 @@
 // Roteador HTTP mínimo sobre node:http: rotas com parâmetros, corpo JSON e erros padronizados.
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { contexto, contextoDaRequisicao } from './auditoria.ts';
+import { MAQUINA, contexto, type ContextoUso, type Papel } from './auditoria.ts';
 
 export class ErroHttp extends Error {
   status: number;
@@ -18,6 +18,7 @@ export interface Ctx {
   params: Record<string, string>;
   query: URLSearchParams;
   corpo: any;
+  quem: ContextoUso | null;
 }
 
 export interface Resposta {
@@ -41,21 +42,26 @@ export function criado(corpo: unknown): Resposta {
 }
 
 type Handler = (ctx: Ctx) => unknown | Promise<unknown>;
-interface Rota { metodo: string; partes: string[]; handler: Handler }
+
+// publico: dispensa login. papeis: só esses papéis usam a rota. leitorPode: leitor usa a rota mesmo não sendo GET.
+export interface OpcoesRota { publico?: boolean; papeis?: Papel[]; leitorPode?: boolean }
+interface Rota { metodo: string; partes: string[]; handler: Handler; opcoes: OpcoesRota }
 
 export class Roteador {
   rotas: Rota[] = [];
+  // Quem fez a requisição (sessão ou Cloudflare Access). Definido por quem monta as rotas.
+  identificar?: (req: IncomingMessage) => ContextoUso | null;
 
-  add(metodo: string, padrao: string, handler: Handler): void {
-    this.rotas.push({ metodo, partes: padrao.split('/').filter(Boolean), handler });
+  add(metodo: string, padrao: string, handler: Handler, opcoes: OpcoesRota = {}): void {
+    this.rotas.push({ metodo, partes: padrao.split('/').filter(Boolean), handler, opcoes });
   }
-  get(p: string, h: Handler) { this.add('GET', p, h); }
-  post(p: string, h: Handler) { this.add('POST', p, h); }
-  put(p: string, h: Handler) { this.add('PUT', p, h); }
-  patch(p: string, h: Handler) { this.add('PATCH', p, h); }
-  delete(p: string, h: Handler) { this.add('DELETE', p, h); }
+  get(p: string, h: Handler, o?: OpcoesRota) { this.add('GET', p, h, o); }
+  post(p: string, h: Handler, o?: OpcoesRota) { this.add('POST', p, h, o); }
+  put(p: string, h: Handler, o?: OpcoesRota) { this.add('PUT', p, h, o); }
+  patch(p: string, h: Handler, o?: OpcoesRota) { this.add('PATCH', p, h, o); }
+  delete(p: string, h: Handler, o?: OpcoesRota) { this.add('DELETE', p, h, o); }
 
-  encontrar(metodo: string, caminho: string): { handler: Handler; params: Record<string, string> } | undefined {
+  encontrar(metodo: string, caminho: string): { handler: Handler; params: Record<string, string>; opcoes: OpcoesRota } | undefined {
     const partes = caminho.split('/').filter(Boolean).map(decodeURIComponent);
     for (const r of this.rotas) {
       if (r.metodo !== metodo || r.partes.length !== partes.length) continue;
@@ -65,7 +71,7 @@ export class Roteador {
         if (r.partes[i].startsWith(':')) params[r.partes[i].slice(1)] = partes[i];
         else if (r.partes[i] !== partes[i]) { ok = false; break; }
       }
-      if (ok) return { handler: r.handler, params };
+      if (ok) return { handler: r.handler, params, opcoes: r.opcoes };
     }
     return undefined;
   }
@@ -96,15 +102,37 @@ export function responderJson(res: ServerResponse, status: number, corpo: unknow
 export async function despachar(rot: Roteador, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const achado = rot.encontrar(req.method ?? 'GET', url.pathname);
   if (!achado) return false;
-  // Cada requisição da interface roda com quem está agindo; envios disparados aqui herdam o contexto.
-  await contexto.run(contextoDaRequisicao(req.headers), () => executarRota(achado, req, res, url));
+  let quem: ContextoUso | null = null;
+  try {
+    quem = rot.identificar ? rot.identificar(req) : null;
+  } catch (e) {
+    if (!achado.opcoes.publico) {
+      const err = e instanceof ErroHttp ? e : new ErroHttp(500, (e as Error).message);
+      responderJson(res, err.status, { erro: err.message });
+      return true;
+    }
+  }
+  if (!achado.opcoes.publico) {
+    if (!quem) { responderJson(res, 401, { erro: 'Entre no MassGen para continuar.' }); return true; }
+    if (achado.opcoes.papeis && !achado.opcoes.papeis.includes(quem.papel!)) {
+      responderJson(res, 403, { erro: `Só ${achado.opcoes.papeis.join(' ou ')} pode fazer isto.` });
+      return true;
+    }
+    if (quem.papel === 'leitor' && !['GET', 'HEAD'].includes(req.method ?? 'GET') && !achado.opcoes.leitorPode) {
+      responderJson(res, 403, { erro: 'Seu papel é leitor: você pode consultar, mas não alterar.' });
+      return true;
+    }
+  }
+  // Cada requisição roda com quem está agindo; envios disparados aqui herdam o contexto (e a trilha registra o e-mail).
+  const ctx: ContextoUso = quem ?? { usuario: 'anônimo', maquina: MAQUINA, origem: 'anonimo' };
+  await contexto.run(ctx, () => executarRota(achado, req, res, url, quem));
   return true;
 }
 
-async function executarRota(achado: { handler: Handler; params: Record<string, string> }, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+async function executarRota(achado: { handler: Handler; params: Record<string, string> }, req: IncomingMessage, res: ServerResponse, url: URL, quem: ContextoUso | null): Promise<void> {
   try {
     const corpo = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '') ? await lerCorpo(req) : undefined;
-    const r = await achado.handler({ req, res, params: achado.params, query: url.searchParams, corpo });
+    const r = await achado.handler({ req, res, params: achado.params, query: url.searchParams, corpo, quem });
     if (res.writableEnded) return;
     if (r && typeof r === 'object' && (r as Resposta).__resposta) {
       const rr = r as Resposta;

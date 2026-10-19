@@ -141,8 +141,16 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .nav-item.ativo { background: var(--destaque-suave); color: var(--destaque-forte); }
 .nav-item svg { flex-shrink: 0; opacity: 0.85; }
 .lateral-rodape { margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--linha); display: flex; flex-direction: column; gap: 8px; }
-.operador { display: flex; align-items: center; gap: 6px; padding: 4px 9px; font-size: 12px; color: var(--tinta-2); min-width: 0; }
-.operador span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usuario-bloco { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.usuario-id { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 2px 9px; min-width: 0; max-width: 100%; }
+.usuario-nome { font-size: 13px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usuario-email { font-size: 11.5px; color: var(--tinta-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Telas fora do app logado: entrada, convite, sem acesso. */
+.porta { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.porta-cartao {
+  width: min(400px, 100%); display: flex; flex-direction: column; gap: 18px; padding: 26px 24px;
+  background: var(--superficie); border: 1px solid var(--linha); border-radius: var(--raio);
+}
 .conteudo { min-width: 0; padding: 22px 28px 48px; }
 .pagina { max-width: 1320px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
 .cabecalho { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
