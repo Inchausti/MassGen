@@ -27,6 +27,21 @@ npm run mock
 
 Ela fica em http://localhost:8089, com `client_id` **massgen** e `client_secret` **massgen-segredo**. O comprador cadastrado é o CNPJ **11222333000181**. Crie um destino com o pacote SplitHub apontando para ela e rode o cenário C-01.
 
+## Como usar
+
+1. **Destino** — em *Destinos › Novo destino*, importe a collection e o environment do Postman ou preencha à mão. As credenciais vão para a aba *Segredos* (cofre). Use *Testar conexão*.
+2. **Estrutura de APIs** — cada operação ligada a uma entidade e a uma ação (`criar`, `consultar`…). O que a collection não tem vem do pacote. As divergências entre a collection e o modelo aparecem ali.
+3. **Modelos e cadastros** — ajuste os modelos do pacote (campos, geradores, regras, perfis, casos de borda) e veja um exemplo antes de salvar. Salve empresas, contratos e o que mais quiser como cadastros mestres.
+4. **Cenário** — parta de um cenário pronto do pacote (C-01 a C-05) e ajuste as quantidades, os perfis, os cadastros e os casos de borda. *Gerar massa* cria a execução, sem enviar nada.
+5. **Execução** — revise a massa, envie e acompanhe:
+   - **Monitor de requisições:** o que foi enviado e o que voltou, com o esperado ao lado. Dá para reenviar e copiar como curl.
+   - **Conferência:** o resultado de cada registro contra o gabarito.
+   - **Rastreabilidade:** o retrato da execução, a trilha e o pacote de evidências.
+
+A primeira vez que abrir o app, informe seu nome: ele entra na trilha de auditoria de cada ação.
+
+Para desenvolver com recarga automática: `npm run dev` (servidor em 3000, interface em 5173).
+
 ## Destinos e a trava de produção
 
 O app só envia para domínios da lista `ALLOWED_DESTINATION_DOMAINS`, no `.env` (veja o `.env.example`). Por padrão, só `localhost`. Para um sandbox, inclua o domínio dele e reinicie.

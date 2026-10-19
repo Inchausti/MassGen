@@ -28,13 +28,13 @@ export function listarRequisicoes(f: FiltroRequisicoes) {
   if (f.faixa === 'erro') where.push('q.status IS NULL');
   else if (f.faixa === '429') where.push('q.status = 429');
   else if (f.faixa && /^[2-5]xx$/.test(f.faixa)) { where.push('q.status BETWEEN ? AND ?'); p.push(Number(f.faixa[0]) * 100, Number(f.faixa[0]) * 100 + 99); }
-  if (f.busca) { where.push('(q.url LIKE ? OR q.req_corpo LIKE ? OR q.res_corpo LIKE ? OR r.rotulo LIKE ?)'); p.push(...Array(4).fill(`%${f.busca}%`)); }
+  if (f.busca) { where.push('(q.url LIKE ? OR q.req_corpo LIKE ? OR q.res_corpo LIKE ? OR r.rotulo LIKE ? OR q.rastreio LIKE ?)'); p.push(...Array(5).fill(`%${f.busca}%`)); }
   if (f.depoisDe) { where.push('q.id > ?'); p.push(f.depoisDe); }
   if (f.antesDe) { where.push('q.id < ?'); p.push(f.antesDe); }
   const limite = Math.min(500, Math.max(1, f.limite ?? 100));
   return todos<Record<string, unknown>>(
     `SELECT q.id, q.execucao_id, q.destino_id, q.registro_id, q.fase, q.entidade, q.metodo, q.url, q.status, q.duracao_ms, q.tentativa,
-            q.chave_idempotencia, q.codigo_erro, q.resultado, q.erro, q.criado_em, r.rotulo AS registro_rotulo, r.caso AS registro_caso
+            q.chave_idempotencia, q.codigo_erro, q.resultado, q.erro, q.criado_em, q.rastreio, q.usuario, r.rotulo AS registro_rotulo, r.caso AS registro_caso
        FROM requisicoes q LEFT JOIN registros r ON r.id = q.registro_id
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY q.id DESC LIMIT ?`,
     ...p, limite,
@@ -42,6 +42,7 @@ export function listarRequisicoes(f: FiltroRequisicoes) {
     id: l.id, execucaoId: l.execucao_id, destinoId: l.destino_id, registroId: l.registro_id, fase: l.fase, entidade: l.entidade,
     metodo: l.metodo, url: l.url, status: l.status, duracaoMs: l.duracao_ms, tentativa: l.tentativa, chaveIdempotencia: l.chave_idempotencia,
     codigoErro: l.codigo_erro, resultado: l.resultado, erro: l.erro, criadoEm: l.criado_em, registroRotulo: l.registro_rotulo, registroCaso: l.registro_caso,
+    rastreio: l.rastreio, usuario: l.usuario,
   }));
 }
 
@@ -58,6 +59,7 @@ export function obterRequisicao(id: number) {
     id: l.id, execucaoId: l.execucao_id, destinoId: l.destino_id, registroId: l.registro_id, fase: l.fase, entidade: l.entidade,
     metodo: l.metodo, url: l.url, status: l.status, duracaoMs: l.duracao_ms, tentativa: l.tentativa, chaveIdempotencia: l.chave_idempotencia,
     codigoErro: l.codigo_erro, resultado: l.resultado, erro: l.erro, criadoEm: l.criado_em,
+    usuario: l.usuario, rastreio: l.rastreio, corpoHash: l.corpo_hash, hash: l.hash, hashAnterior: l.hash_anterior,
     requisicao: { cabecalhos: json(l.req_cabecalhos, {}), corpo: corpo(l.req_corpo) },
     resposta: { cabecalhos: json(l.res_cabecalhos, {}), corpo: corpo(l.res_corpo) },
     registro: reg ? {

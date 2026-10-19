@@ -105,7 +105,7 @@ export function listarPacotes() {
       id: l.id, nome: l.nome, versao: l.versao, descricao: l.descricao, embutido: !!l.embutido, instaladoEm: l.instalado_em,
       contrato: c.contrato, modelos: modelosDoPacote(l.id).map((m) => ({ nome: m.nome, rotulo: m.rotulo })),
       operacoes: c.operacoes?.length ?? 0, cenarios: (c.cenarios ?? []).map((x) => ({ id: x.id, nome: x.nome, descricao: x.descricao })),
-      dominiosProducao: c.dominiosProducao ?? [],
+      dominiosProducao: c.dominiosProducao ?? [], destinoPadrao: c.destinoPadrao ?? null,
     };
   });
 }
