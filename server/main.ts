@@ -17,7 +17,9 @@ const TIPOS: Record<string, string> = {
 
 garantirPacotesEmbutidos();
 marcarInterrompidas();
-auditar('app.iniciar', `MassGen iniciado na porta ${config.porta}`, { detalhes: { dominiosPermitidos: config.dominiosPermitidos } });
+auditar('app.iniciar', `MassGen iniciado na porta ${config.porta}`, {
+  detalhes: { dominiosPermitidos: config.dominiosPermitidos, host: config.host ?? 'todas as interfaces', confiarCloudflareAccess: config.confiarCloudflareAccess },
+});
 
 const servidor = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -41,7 +43,17 @@ const servidor = createServer(async (req, res) => {
   createReadStream(arquivo).pipe(res);
 });
 
-servidor.listen(config.porta, () => {
-  console.log(`MassGen no ar: http://localhost:${config.porta}`);
+const LOOPBACK = (h: string) => h === 'localhost' || h === '::1' || h.startsWith('127.');
+
+servidor.listen({ port: config.porta, host: config.host }, () => {
+  const h = config.host && config.host !== '0.0.0.0' && config.host !== '::' ? config.host : 'localhost';
+  console.log(`MassGen no ar: http://${h.includes(':') ? `[${h}]` : h}:${config.porta}`);
+  console.log(`Escutando em ${config.host ?? 'todas as interfaces'}`);
   console.log(`Domínios permitidos como destino: ${config.dominiosPermitidos.join(', ')}`);
+  if (config.confiarCloudflareAccess) {
+    console.log('Identidade pelo Cloudflare Access: o e-mail autenticado entra na trilha de auditoria.');
+    if (!config.host || !LOOPBACK(config.host)) {
+      console.warn('Atenção: MASSGEN_CONFIAR_CLOUDFLARE_ACCESS=true sem MASSGEN_HOST=127.0.0.1. Quem alcançar o app sem passar pelo túnel pode forjar o e-mail.');
+    }
+  }
 });

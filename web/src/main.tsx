@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './estilos.css';
 import { ProvedorRota, Link, useRota, casar } from './rotas.tsx';
 import { ProvedorAvisos, Modal } from './ui.tsx';
-import { definirUsuarioLocal, usuarioLocal } from './api.ts';
+import { definirUsuarioLocal, get, usuarioLocal } from './api.ts';
 import { Painel } from './paginas/Painel.tsx';
 import { Destinos, NovoDestino } from './paginas/Destinos.tsx';
 import { DestinoDetalhe } from './paginas/Destino.tsx';
@@ -62,15 +62,34 @@ function lerTema(): Tema {
   try { return (localStorage.getItem('massgen.tema') as Tema) || 'sistema'; } catch { return 'sistema'; }
 }
 
+interface Identidade { usuario: string; origem: 'cloudflare-access' | 'interface' | 'sistema' }
+
+// Atrás do Cloudflare Access, quem entra na trilha é o e-mail autenticado: o nome digitado não vale e não é pedido.
 function Operador() {
+  const [identidade, setIdentidade] = useState<Identidade | null>(null);
   const [nome, setNome] = useState(usuarioLocal());
-  const [editando, setEditando] = useState(!usuarioLocal());
+  const [editando, setEditando] = useState(false);
   const [rascunho, setRascunho] = useState(nome);
+  useEffect(() => {
+    get<{ usuario: Identidade }>('/config')
+      .then((c) => {
+        setIdentidade(c.usuario);
+        if (c.usuario.origem !== 'cloudflare-access' && !usuarioLocal()) setEditando(true);
+      })
+      .catch(() => { if (!usuarioLocal()) setEditando(true); });
+  }, []);
   const salvar = () => {
     definirUsuarioLocal(rascunho);
     setNome(rascunho.trim());
     setEditando(false);
   };
+  if (identidade?.origem === 'cloudflare-access') {
+    return (
+      <div className="operador" title="Identificado pelo Cloudflare Access: este e-mail entra na trilha de auditoria">
+        👤 <span>{identidade.usuario}</span>
+      </div>
+    );
+  }
   return (
     <>
       <button className="botao fantasma pequeno" style={{ justifyContent: 'flex-start' }} onClick={() => { setRascunho(nome); setEditando(true); }} title="Quem aparece na trilha de auditoria">

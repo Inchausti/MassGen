@@ -1,0 +1,21 @@
+# Backup do MassGen (banco SQLite e chave do cofre). Disparado pelo massgen-backup.timer.
+#   sudo cp deploy/massgen-backup.service deploy/massgen-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now massgen-backup.timer
+# Backup avulso, agora: sudo systemctl start massgen-backup.service
+
+[Unit]
+Description=Backup do MassGen (banco SQLite e chave do cofre)
+
+[Service]
+Type=oneshot
+User=massgen
+Group=massgen
+WorkingDirectory=/opt/massgen
+Environment=MASSGEN_DIR=/opt/massgen
+Environment=MASSGEN_BACKUP_DIR=/var/backups/massgen
+Environment=MASSGEN_BACKUP_RETENCAO_DIAS=14
+# O .env do app vem por último: o que estiver nele (MASSGEN_DATA_DIR, MASSGEN_BACKUP_*) vale mais que as linhas acima.
+EnvironmentFile=-/opt/massgen/.env
+ExecStart=/bin/bash /opt/massgen/deploy/backup.sh
+Nice=10
+IOSchedulingClass=idle

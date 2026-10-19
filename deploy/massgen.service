@@ -1,0 +1,40 @@
+# MassGen como serviço do systemd. Instalação: veja "Hospedar para o time", no README.
+#   sudo cp deploy/massgen.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now massgen
+# Supõe o app em /opt/massgen, o usuário massgen e o Node em /usr/bin/node (confira com: command -v node).
+
+[Unit]
+Description=MassGen - gerador de massa de dados
+Documentation=https://github.com/Inchausti/MassGen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=massgen
+Group=massgen
+WorkingDirectory=/opt/massgen
+# O app também lê o .env sozinho; carregá-lo aqui deixa as variáveis visíveis no systemctl show.
+EnvironmentFile=/opt/massgen/.env
+ExecStart=/usr/bin/node server/main.ts
+Restart=always
+RestartSec=5
+
+# Banco e chave do cofre nascem legíveis só pelo usuário massgen.
+UMask=0077
+
+# Endurecimento: o app só grava em data/. Se mudar MASSGEN_DATA_DIR no .env, mude ReadWritePaths também.
+# A pasta precisa existir antes da primeira subida (sudo -u massgen mkdir -p /opt/massgen/data).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/massgen/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -9,8 +9,10 @@ import path from 'node:path';
 const RAIZ = path.resolve(import.meta.dirname, '..');
 const PORTA_APP = 13917;
 const PORTA_MOCK = 18917;
+const PORTA_ACCESS = 13918;
 const API = `http://localhost:${PORTA_APP}/api`;
 const dados = mkdtempSync(path.join(tmpdir(), 'massgen-e2e-'));
+const dadosAccess = mkdtempSync(path.join(tmpdir(), 'massgen-e2e-access-'));
 const processos: ChildProcess[] = [];
 
 function subir(arquivo: string, env: Record<string, string>, pronto: RegExp): Promise<void> {
@@ -47,12 +49,15 @@ let destinoId = '';
 
 before(async () => {
   await subir('mock/servidor.ts', { MOCK_PORT: String(PORTA_MOCK) }, /API falsa no ar/);
-  await subir('server/main.ts', { PORT: String(PORTA_APP), MASSGEN_DATA_DIR: dados, ALLOWED_DESTINATION_DOMAINS: 'localhost' }, /MassGen no ar/);
+  await subir('server/main.ts', {
+    PORT: String(PORTA_APP), MASSGEN_DATA_DIR: dados, ALLOWED_DESTINATION_DOMAINS: 'localhost', MASSGEN_HOST: '', MASSGEN_CONFIAR_CLOUDFLARE_ACCESS: 'false',
+  }, /MassGen no ar/);
 });
 
 after(() => {
   for (const p of processos) p.kill();
   rmSync(dados, { recursive: true, force: true });
+  rmSync(dadosAccess, { recursive: true, force: true });
 });
 
 test('a trava recusa domínio fora da lista e o de produção do pacote', async () => {
@@ -194,4 +199,52 @@ test('integridade: alterar uma requisição gravada é detectado', async () => {
   const depois = await api('GET', '/auditoria/integridade');
   assert.equal(depois.requisicoes.ok, false);
   assert.equal(depois.requisicoes.primeiraFalha.id, alvo.id);
+});
+
+// ---------------------------------------------------------------- Cloudflare Access
+
+async function chamar(base: string, metodo: string, rota: string, cabecalhos: Record<string, string>, corpo?: unknown): Promise<any> {
+  const r = await fetch(base + rota, { method: metodo, headers: { 'content-type': 'application/json', ...cabecalhos }, body: corpo === undefined ? undefined : JSON.stringify(corpo) });
+  const texto = await r.text();
+  if (!r.ok) throw new Error(`${metodo} ${rota} → ${r.status}: ${texto}`);
+  return texto ? JSON.parse(texto) : undefined;
+}
+
+const destinoSimples = { nome: 'Destino do Access', tipoAmbiente: 'desenvolvimento', baseUrl: `http://localhost:${PORTA_MOCK}` };
+
+test('Cloudflare Access desligado: o cabeçalho do e-mail é ignorado, porque poderia ser forjado', async () => {
+  const cab = { 'cf-access-authenticated-user-email': 'intruso@exemplo.com', 'x-massgen-usuario': encodeURIComponent('Ana Teste') };
+  const cfg = await chamar(API, 'GET', '/config', cab);
+  assert.equal(cfg.usuario.origem, 'interface');
+  assert.match(cfg.usuario.usuario, /^Ana Teste · /);
+  const d = await chamar(API, 'POST', '/destinos', cab, destinoSimples);
+  const [linha] = await api('GET', `/auditoria?acao=destino.criar&alvo=${d.id}`);
+  assert.match(linha.usuario, /^Ana Teste · /);
+  assert.deepEqual(await api('GET', '/auditoria?usuario=intruso'), []);
+  const soEmail = await chamar(API, 'GET', '/config', { 'cf-access-authenticated-user-email': 'intruso@exemplo.com' });
+  assert.ok(!soEmail.usuario.usuario.includes('intruso'), soEmail.usuario.usuario);
+});
+
+test('Cloudflare Access ligado: o e-mail autenticado vira o usuário da trilha, e o app escuta só no MASSGEN_HOST', async () => {
+  await subir('server/main.ts', {
+    PORT: String(PORTA_ACCESS), MASSGEN_HOST: '127.0.0.1', MASSGEN_DATA_DIR: dadosAccess, ALLOWED_DESTINATION_DOMAINS: 'localhost',
+    MASSGEN_CONFIAR_CLOUDFLARE_ACCESS: 'true',
+  }, /MassGen no ar: http:\/\/127\.0\.0\.1:/);
+  const base = `http://127.0.0.1:${PORTA_ACCESS}/api`;
+  const cab = { 'cf-access-authenticated-user-email': 'Ana.Teste@Empresa.com.br', 'x-massgen-usuario': encodeURIComponent('Outro Nome') };
+  const cfg = await chamar(base, 'GET', '/config', cab);
+  assert.deepEqual(cfg.usuario, { usuario: 'ana.teste@empresa.com.br', maquina: cfg.usuario.maquina, origem: 'cloudflare-access' });
+  const d = await chamar(base, 'POST', '/destinos', cab, destinoSimples);
+  const [linha] = await chamar(base, 'GET', `/auditoria?acao=destino.criar&alvo=${d.id}`, {});
+  assert.equal(linha.usuario, 'ana.teste@empresa.com.br', 'o nome digitado não substitui o e-mail do Access');
+  // Sem o cabeçalho (acesso direto pela própria VM), vale o nome informado na interface.
+  const direto = await chamar(base, 'GET', '/config', { 'x-massgen-usuario': encodeURIComponent('Admin') });
+  assert.equal(direto.usuario.origem, 'interface');
+  assert.match(direto.usuario.usuario, /^Admin · /);
+  // Valor que não é e-mail não é aceito como identidade.
+  const torto = await chamar(base, 'GET', '/config', { 'cf-access-authenticated-user-email': 'ana.teste sem arroba' });
+  assert.equal(torto.usuario.origem, 'interface');
+  const [inicio] = await chamar(base, 'GET', '/auditoria?acao=app.iniciar', {});
+  assert.deepEqual([inicio.detalhes.host, inicio.detalhes.confiarCloudflareAccess], ['127.0.0.1', true]);
+  await assert.rejects(fetch(`http://[::1]:${PORTA_ACCESS}/api/saude`), 'escutando só em 127.0.0.1, o app não responde em outro endereço');
 });

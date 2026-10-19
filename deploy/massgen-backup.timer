@@ -1,0 +1,13 @@
+# Backup diário do MassGen às 3h, no fuso da VM (confira com: timedatectl).
+# Persistent=true: se a VM estava desligada no horário, o backup roda assim que ela voltar.
+
+[Unit]
+Description=Backup diário do MassGen
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

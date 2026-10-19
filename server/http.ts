@@ -97,7 +97,7 @@ export async function despachar(rot: Roteador, req: IncomingMessage, res: Server
   const achado = rot.encontrar(req.method ?? 'GET', url.pathname);
   if (!achado) return false;
   // Cada requisição da interface roda com quem está agindo; envios disparados aqui herdam o contexto.
-  await contexto.run(contextoDaRequisicao(req.headers['x-massgen-usuario']), () => executarRota(achado, req, res, url));
+  await contexto.run(contextoDaRequisicao(req.headers), () => executarRota(achado, req, res, url));
   return true;
 }
 

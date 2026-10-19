@@ -19,8 +19,14 @@ carregarEnv();
 const lista = (v: string | undefined): string[] =>
   (v ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 
+const ligado = (v: string | undefined): boolean => (v ?? '').trim().toLowerCase() === 'true';
+
 export const config = {
   porta: Number(process.env.PORT || 3000),
+  // Endereço de escuta. Vazio: todas as interfaces. Na VM, 127.0.0.1: só o cloudflared, na mesma máquina, alcança o app.
+  host: process.env.MASSGEN_HOST?.trim() || undefined,
+  // Atrás do Cloudflare Access: o e-mail autenticado (Cf-Access-Authenticated-User-Email) vira o usuário da trilha.
+  confiarCloudflareAccess: ligado(process.env.MASSGEN_CONFIAR_CLOUDFLARE_ACCESS),
   dirDados: path.resolve(RAIZ, process.env.MASSGEN_DATA_DIR || 'data'),
   dirWeb: path.join(RAIZ, 'web', 'dist'),
   dirPacotes: path.join(RAIZ, 'packs'),
