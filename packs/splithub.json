@@ -1,0 +1,272 @@
+{
+  "id": "splithub",
+  "nome": "SplitHub",
+  "versao": "1.0.0",
+  "descricao": "Fornecedores, contratos e documentos fiscais segundo o docs da API do SplitHub v1.7.0. Comprovantes de guia RAD entram na versão seguinte do pacote.",
+  "contrato": "docs da API SplitHub v1.7.0",
+  "dominiosProducao": ["api.splithub.com.br"],
+  "destinoPadrao": {
+    "autenticacao": { "tipo": "oauth2_cc", "tokenUrl": "/public/oauth/token", "formato": "json" },
+    "limites": { "porMinuto": 1000 },
+    "idempotencia": { "cabecalho": "Idempotency-Key" },
+    "cabecalhos": { "Content-Type": "application/json" },
+    "variaveis": { "buyer_cnpj": "", "buyer_name": "", "buyer_state": "" },
+    "teste": { "metodo": "GET", "rota": "/v1/suppliers?page=1&page_size=1" }
+  },
+  "operacoes": [
+    { "nome": "Cadastrar fornecedor", "pasta": "Fornecedores", "entidade": "fornecedor", "acao": "criar", "metodo": "POST", "rota": "/v1/suppliers" },
+    { "nome": "Consultar fornecedor", "pasta": "Fornecedores", "entidade": "fornecedor", "acao": "consultar", "metodo": "GET", "rota": "/v1/suppliers/{{$id}}" },
+    { "nome": "Cadastrar contrato", "pasta": "Contratos", "entidade": "contrato", "acao": "criar", "metodo": "POST", "rota": "/v1/contracts" },
+    { "nome": "Consultar contrato", "pasta": "Contratos", "entidade": "contrato", "acao": "consultar", "metodo": "GET", "rota": "/v1/contracts/{{$id}}" },
+    { "nome": "Enviar documento fiscal", "pasta": "Documentos fiscais", "entidade": "documento", "acao": "criar", "metodo": "POST", "rota": "/v1/fiscal-documents" },
+    { "nome": "Consultar documento fiscal", "pasta": "Documentos fiscais", "entidade": "documento", "acao": "consultar", "metodo": "GET", "rota": "/v1/fiscal-documents/{{$id}}" }
+  ],
+  "modelos": [
+    {
+      "nome": "fornecedor",
+      "rotulo": "Fornecedor",
+      "descricao": "Fornecedor do comprador. Enviado por POST /v1/suppliers; só cnpj e legal_name são obrigatórios.",
+      "rotuloRegistro": "{{ legal_name }}",
+      "idRemoto": "id",
+      "campos": [
+        { "nome": "cnpj", "obrigatorio": true, "unico": true, "descricao": "Raiz começando por 9 para marcar a massa", "gerador": { "tipo": "cnpj", "prefixo": "9" } },
+        { "nome": "legal_name", "obrigatorio": true, "gerador": { "tipo": "empresa", "sufixo": " — MASSA {{ $exec.codigo }}" } },
+        { "nome": "trade_name", "gerador": { "tipo": "expressao", "expr": "$substringBefore(legal_name, ' — ')" } },
+        { "nome": "founding_date", "tipo": "data", "gerador": { "tipo": "data", "min": -9000, "max": -400 } },
+        { "nome": "registration_status", "gerador": { "tipo": "fixo", "valor": "active" } },
+        { "nome": "legal_nature", "gerador": { "tipo": "lista", "valores": ["206", "205", "213"] } },
+        { "nome": "tax_regime", "gerador": { "tipo": "lista", "valores": [{ "valor": "lucro_real", "peso": 40 }, { "valor": "lucro_presumido", "peso": 40 }, { "valor": "simples_nacional", "peso": 20 }] } },
+        { "nome": "economic_activity", "gerador": { "tipo": "lista", "valores": ["4711302", "4930202", "6190699", "2511000", "4644301", "6201501"] } },
+        { "nome": "address.state", "gerador": { "tipo": "uf", "valores": [{ "valor": "SP", "peso": 40 }, { "valor": "RJ", "peso": 15 }, { "valor": "MG", "peso": 15 }, { "valor": "PR", "peso": 10 }, { "valor": "RS", "peso": 10 }, { "valor": "BA", "peso": 10 }] } },
+        { "nome": "address.street", "gerador": { "tipo": "logradouro" } },
+        { "nome": "address.number", "gerador": { "tipo": "texto", "padrao": "###0" } },
+        { "nome": "address.neighborhood", "gerador": { "tipo": "bairro" } },
+        { "nome": "address.city", "gerador": { "tipo": "municipio", "uf": "{{ address.state }}" } },
+        { "nome": "address.zipcode", "gerador": { "tipo": "cep", "uf": "{{ address.state }}" } },
+        { "nome": "contact.email", "gerador": { "tipo": "email", "usuario": "{{ trade_name }}", "dominio": "fornecedor.exemplo.com.br" } },
+        { "nome": "contact.phone", "gerador": { "tipo": "telefone" } }
+      ],
+      "regras": [
+        { "nome": "cnpj_valido", "expr": "$cnpjValido(cnpj)", "mensagem": "O CNPJ precisa ter dígito verificador válido." }
+      ],
+      "casos": [
+        { "id": "sem_razao_social", "rotulo": "Sem razão social", "descricao": "Falta legal_name, obrigatório.", "campos": { "legal_name": { "tipo": "omitir" }, "trade_name": { "tipo": "fixo", "valor": "Sem razão social" }, "contact.email": { "tipo": "email" } }, "esperado": { "status": [400, 499] } },
+        { "id": "cnpj_invalido", "rotulo": "CNPJ com dígito errado", "quebra": "cnpj_valido", "campos": { "cnpj": { "tipo": "fixo", "valor": "12345678000100" } }, "esperado": { "status": [400, 499] } },
+        { "id": "cnpj_repetido", "rotulo": "CNPJ repetido", "descricao": "Usa o CNPJ do primeiro fornecedor da massa.", "campos": { "cnpj": { "tipo": "repetir", "campo": "cnpj" } }, "esperado": { "status": [400, 499] } }
+      ],
+      "esperado": { "status": 201 }
+    },
+    {
+      "nome": "contrato",
+      "rotulo": "Contrato",
+      "descricao": "Contrato entre o comprador e um fornecedor. Enviado por POST /v1/contracts.",
+      "rotuloRegistro": "{{ external_contract_id }}",
+      "idRemoto": "id",
+      "relacoes": [
+        { "nome": "fornecedor", "entidade": "fornecedor", "modo": "um_para_um" }
+      ],
+      "campos": [
+        { "nome": "external_contract_id", "obrigatorio": true, "unico": true, "gerador": { "tipo": "sequencia", "prefixo": "MASSA-{{ $exec.codigo }}-", "digitos": 4 } },
+        { "nome": "description", "obrigatorio": true, "gerador": { "tipo": "fixo", "valor": "Contrato de fornecimento — massa {{ $exec.codigo }}" } },
+        { "nome": "buyer_cnpj", "obrigatorio": true, "gerador": { "tipo": "variavel", "nome": "buyer_cnpj" } },
+        { "nome": "supplier_cnpj", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "fornecedor.cnpj" } },
+        { "nome": "start_date", "obrigatorio": true, "tipo": "data", "gerador": { "tipo": "data", "min": -30, "max": -30 } },
+        { "nome": "end_date", "obrigatorio": true, "tipo": "data", "gerador": { "tipo": "expressao", "expr": "$somaDias(start_date, 395)" } },
+        { "nome": "total_value", "obrigatorio": true, "gerador": { "tipo": "dinheiro", "min": 50000, "max": 500000, "passo": 10000 } },
+        { "nome": "payment_conditions", "obrigatorio": true, "gerador": { "tipo": "lista", "valores": ["30", "30-60", "30-60-90"] } },
+        { "nome": "payment_method", "obrigatorio": true, "gerador": { "tipo": "fixo", "valor": "rad" } },
+        { "nome": "payment_term_days", "obrigatorio": true, "gerador": { "tipo": "lista", "valores": [30, 45, 60] } },
+        { "nome": "autorenew", "obrigatorio": true, "gerador": { "tipo": "booleano", "probabilidade": 0.5 } },
+        { "nome": "rad_eligible", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "payment_method = 'rad'" } },
+        { "nome": "notes", "gerador": { "tipo": "fixo", "valor": "Gerado pelo MassGen — execução {{ $exec.codigo }}" } }
+      ],
+      "perfis": [
+        { "nome": "rad", "rotulo": "Recolhimento pelo adquirente (RAD)", "peso": 70, "campos": { "payment_method": { "tipo": "fixo", "valor": "rad" } } },
+        { "nome": "fornecedor_recolhe", "rotulo": "Fornecedor recolhe", "peso": 30, "campos": { "payment_method": { "tipo": "fixo", "valor": "supplier" } } }
+      ],
+      "regras": [
+        { "nome": "vigencia", "expr": "end_date > start_date", "mensagem": "O fim da vigência precisa ser depois do início." },
+        { "nome": "rad_elegivel", "expr": "payment_method != 'rad' or rad_eligible = true", "mensagem": "Contrato RAD precisa de rad_eligible verdadeiro." }
+      ],
+      "casos": [
+        { "id": "vigencia_invertida", "rotulo": "Vigência invertida", "quebra": "vigencia", "campos": { "end_date": { "tipo": "expressao", "expr": "$somaDias(start_date, -1)" } }, "esperado": { "status": [400, 499] } },
+        { "id": "sem_comprador", "rotulo": "Sem CNPJ do comprador", "campos": { "buyer_cnpj": { "tipo": "omitir" } }, "esperado": { "status": [400, 499] } }
+      ],
+      "esperado": { "status": 201 }
+    },
+    {
+      "nome": "documento",
+      "rotulo": "Documento fiscal",
+      "descricao": "Documento fiscal de entrada, emitido pelo fornecedor do contrato para o comprador. Enviado por POST /v1/fiscal-documents; o processamento é assíncrono. Sem base de cálculo, como no docs v1.4.0.",
+      "rotuloRegistro": "{{ $uppercase(type) }} {{ identification.number }}",
+      "idRemoto": "id",
+      "relacoes": [
+        { "nome": "contrato", "entidade": "contrato", "modo": "aleatorio" },
+        { "nome": "fornecedor", "entidade": "fornecedor", "via": "contrato" }
+      ],
+      "campos": [
+        { "nome": "type", "obrigatorio": true, "gerador": { "tipo": "fixo", "valor": "nfe" } },
+        { "nome": "model", "obrigatorio": true, "gerador": { "tipo": "fixo", "valor": "55" } },
+        { "nome": "identification.number", "obrigatorio": true, "gerador": { "tipo": "sequencia", "inicio": 10001 } },
+        { "nome": "identification.series", "obrigatorio": true, "gerador": { "tipo": "fixo", "valor": "1" } },
+        { "nome": "identification.emission_date", "obrigatorio": true, "tipo": "data_hora", "gerador": { "tipo": "data_hora", "min": -10, "max": 0 } },
+        { "nome": "emission.cnpj", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "fornecedor.cnpj" } },
+        { "nome": "emission.legal_name", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "fornecedor.legal_name" } },
+        { "nome": "emission.state", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "fornecedor.address.state" } },
+        { "nome": "access_key", "obrigatorio": true, "unico": true, "gerador": { "tipo": "chave_dfe", "uf": "{{ emission.state }}", "data": "{{ identification.emission_date }}", "cnpj": "{{ emission.cnpj }}", "modelo": "{{ model }}", "serie": "{{ identification.series }}", "numero": "{{ identification.number }}" } },
+        { "nome": "contract_id", "descricao": "Id do contrato no destino, resolvido no envio", "gerador": { "tipo": "id_remoto", "relacao": "contrato" } },
+        { "nome": "destination.cnpj_cpf", "obrigatorio": true, "gerador": { "tipo": "variavel", "nome": "buyer_cnpj" } },
+        { "nome": "destination.name", "obrigatorio": true, "gerador": { "tipo": "variavel", "nome": "buyer_name" } },
+        { "nome": "destination.state", "gerador": { "tipo": "variavel", "nome": "buyer_state" } },
+        {
+          "nome": "items",
+          "tipo": "lista",
+          "obrigatorio": true,
+          "itens": {
+            "quantidade": { "min": 1, "max": 3 },
+            "campos": [
+              { "nome": "code", "gerador": { "tipo": "texto", "padrao": "SKU-####" } },
+              { "nome": "description", "gerador": { "tipo": "lista", "valores": ["Notebook", "Monitor", "Cadeira de escritório", "Impressora", "Roteador", "Servidor"] } },
+              { "nome": "ncm", "gerador": { "tipo": "lista", "valores": ["84713012", "85285200", "94013000", "84433210", "85176241", "84715010"] } },
+              { "nome": "cfop", "gerador": { "tipo": "fixo", "valor": "5102" } },
+              { "nome": "quantity", "gerador": { "tipo": "numero", "min": 1, "max": 10 } },
+              { "nome": "unit", "gerador": { "tipo": "fixo", "valor": "unit" } },
+              { "nome": "unit_price", "gerador": { "tipo": "dinheiro", "min": 100, "max": 5000, "passo": 100 } },
+              { "nome": "total_value", "gerador": { "tipo": "expressao", "expr": "$dinheiro($num(unit_price) * quantity)" } },
+              { "nome": "tax.ibs_cbs.cst", "gerador": { "tipo": "fixo", "valor": "000" } },
+              { "nome": "tax.ibs_cbs.c_class_trib", "gerador": { "tipo": "fixo", "valor": "000001" } },
+              { "nome": "tax.ibs_cbs.g_ibs_uf.p_ibs_uf", "gerador": { "tipo": "fixo", "valor": "0.05" } },
+              { "nome": "tax.ibs_cbs.g_ibs_uf.v_ibs_uf", "gerador": { "tipo": "expressao", "expr": "$dinheiro($num(total_value) * $num(tax.ibs_cbs.g_ibs_uf.p_ibs_uf) / 100)" } },
+              { "nome": "tax.ibs_cbs.g_ibs_mun.p_ibs_mun", "gerador": { "tipo": "fixo", "valor": "0.05" } },
+              { "nome": "tax.ibs_cbs.g_ibs_mun.v_ibs_mun", "gerador": { "tipo": "expressao", "expr": "$dinheiro($num(total_value) * $num(tax.ibs_cbs.g_ibs_mun.p_ibs_mun) / 100)" } },
+              { "nome": "tax.ibs_cbs.g_cbs.p_cbs", "gerador": { "tipo": "fixo", "valor": "0.9" } },
+              { "nome": "tax.ibs_cbs.g_cbs.v_cbs", "gerador": { "tipo": "expressao", "expr": "$dinheiro($num(total_value) * $num(tax.ibs_cbs.g_cbs.p_cbs) / 100)" } }
+            ]
+          }
+        },
+        { "nome": "total.products_value", "gerador": { "tipo": "expressao", "expr": "$somaDinheiro(items.total_value)" } },
+        { "nome": "total.total_note_value", "obrigatorio": true, "gerador": { "tipo": "expressao", "expr": "$somaDinheiro(items.total_value)" } },
+        { "nome": "total.ibs_cbs_total.v_tot_ibs", "gerador": { "tipo": "expressao", "expr": "$somaDinheiro(items.($num(tax.ibs_cbs.g_ibs_uf.v_ibs_uf) + $num(tax.ibs_cbs.g_ibs_mun.v_ibs_mun)))" } },
+        { "nome": "total.ibs_cbs_total.v_tot_cbs", "gerador": { "tipo": "expressao", "expr": "$somaDinheiro(items.tax.ibs_cbs.g_cbs.v_cbs)" } }
+      ],
+      "perfis": [
+        { "nome": "nfe_com_contrato", "rotulo": "NF-e com contrato", "peso": 60 },
+        { "nome": "nfe_sem_contrato", "rotulo": "NF-e sem contrato informado", "peso": 20, "campos": { "contract_id": { "tipo": "omitir" } } },
+        {
+          "nome": "nfcom",
+          "rotulo": "NFCom de serviço continuado",
+          "peso": 20,
+          "campos": {
+            "type": { "tipo": "fixo", "valor": "nfcom" },
+            "model": { "tipo": "fixo", "valor": "62" },
+            "competence_date": { "tipo": "expressao", "expr": "$substring(identification.emission_date, 0, 8) & '01'" },
+            "items[].code": { "tipo": "texto", "padrao": "SERV-####" },
+            "items[].description": { "tipo": "lista", "valores": ["Serviço de telefonia móvel corporativo", "Link de dados dedicado", "Internet corporativa"] },
+            "items[].service_type": { "tipo": "fixo", "valor": "mobile_telephony" },
+            "items[].ncm": { "tipo": "omitir" },
+            "items[].cfop": { "tipo": "fixo", "valor": "5302" },
+            "items[].quantity": { "tipo": "fixo", "valor": 1 },
+            "items[].unit": { "tipo": "fixo", "valor": "month" },
+            "items[].unit_price": { "tipo": "dinheiro", "min": 500, "max": 5000, "passo": 100 },
+            "items[].tax.ibs_cbs.cst": { "tipo": "fixo", "valor": "10" },
+            "items[].tax.ibs_cbs.c_class_trib": { "tipo": "fixo", "valor": "0101" },
+            "total.products_value": { "tipo": "omitir" },
+            "total.services_value": { "tipo": "expressao", "expr": "$somaDinheiro(items.total_value)" }
+          }
+        },
+        {
+          "nome": "parametros_proprios",
+          "rotulo": "Método e prazo próprios",
+          "peso": 0,
+          "campos": {
+            "override_contract_params": { "tipo": "fixo", "valor": true },
+            "payment_method": { "tipo": "fixo", "valor": "supplier" },
+            "payment_term_days": { "tipo": "lista", "valores": [45, 60] }
+          }
+        }
+      ],
+      "regras": [
+        { "nome": "chave_valida", "expr": "$chaveValida(access_key)", "mensagem": "A chave de acesso precisa ter dígito verificador válido." },
+        { "nome": "total_fecha", "expr": "$dinheiro($sum(items.$num(total_value))) = total.total_note_value", "mensagem": "O total da nota precisa ser a soma dos itens." }
+      ],
+      "casos": [
+        { "id": "contrato_inexistente", "rotulo": "Contrato inexistente", "campos": { "contract_id": { "tipo": "fixo", "valor": "ctr_inexistente_massgen" } }, "esperado": { "status": 422, "codigo": "contract_not_found" } },
+        {
+          "id": "destinatario_fora",
+          "rotulo": "Destinatário fora da organização",
+          "descricao": "Aceito no envio; a recusa vem no processamento.",
+          "campos": { "destination.cnpj_cpf": { "tipo": "cnpj", "prefixo": "6" }, "destination.name": { "tipo": "empresa" } },
+          "esperado": { "status": 202 },
+          "conferencia": { "tentativas": 5, "intervaloMs": 2000, "esperado": { "status": 200, "assercoes": [{ "caminho": "status", "igual": "error" }, { "caminho": "failure.code", "igual": "recipient_not_registered" }] } }
+        },
+        { "id": "chave_repetida", "rotulo": "Chave de acesso repetida", "descricao": "Usa a chave do primeiro documento da massa.", "campos": { "access_key": { "tipo": "repetir", "campo": "access_key" } }, "esperado": { "status": [400, 499] } },
+        { "id": "chave_dv_invalido", "rotulo": "Chave com dígito errado", "quebra": "chave_valida", "campos": { "access_key": { "tipo": "chave_dfe", "uf": "{{ emission.state }}", "data": "{{ identification.emission_date }}", "cnpj": "{{ emission.cnpj }}", "modelo": "{{ model }}", "serie": "{{ identification.series }}", "numero": "{{ identification.number }}", "dvInvalido": true } }, "esperado": { "status": [400, 499] } },
+        { "id": "sem_itens", "rotulo": "Sem itens", "quebra": "total_fecha", "campos": { "items": { "tipo": "omitir" } }, "esperado": { "status": [400, 499] } }
+      ],
+      "esperado": { "status": 202 },
+      "conferencia": { "tentativas": 5, "intervaloMs": 2000, "esperado": { "status": 200, "assercoes": [{ "caminho": "status", "igual": "completed" }] } }
+    }
+  ],
+  "cenarios": [
+    {
+      "id": "c01",
+      "nome": "C-01 · Fumaça",
+      "descricao": "1 fornecedor, 1 contrato RAD e 1 NF-e com contrato. Confere o caminho feliz de ponta a ponta.",
+      "definicao": {
+        "entidades": [
+          { "entidade": "fornecedor", "quantidade": 1 },
+          { "entidade": "contrato", "porPai": { "relacao": "fornecedor", "min": 1, "max": 1 }, "perfis": { "rad": 100, "fornecedor_recolhe": 0 } },
+          { "entidade": "documento", "quantidade": 1, "perfis": { "nfe_com_contrato": 100, "nfe_sem_contrato": 0, "nfcom": 0, "parametros_proprios": 0 } }
+        ]
+      }
+    },
+    {
+      "id": "c02",
+      "nome": "C-02 · Volume de um mês",
+      "descricao": "200 fornecedores com 1 contrato cada (70% RAD) e 2.000 documentos entre NF-e e NFCom. Ajuste o volume na tela antes de gerar.",
+      "definicao": {
+        "entidades": [
+          { "entidade": "fornecedor", "quantidade": 200 },
+          { "entidade": "contrato", "porPai": { "relacao": "fornecedor", "min": 1, "max": 1 } },
+          { "entidade": "documento", "quantidade": 2000 }
+        ]
+      }
+    },
+    {
+      "id": "c03",
+      "nome": "C-03 · Fornecedor recolhe",
+      "descricao": "Contratos com método fornecedor: a plataforma não deve gerar guia RAD.",
+      "definicao": {
+        "entidades": [
+          { "entidade": "fornecedor", "quantidade": 5 },
+          { "entidade": "contrato", "porPai": { "relacao": "fornecedor", "min": 1, "max": 1 }, "perfis": { "rad": 0, "fornecedor_recolhe": 100 } },
+          { "entidade": "documento", "quantidade": 10, "perfis": { "nfe_com_contrato": 100, "nfe_sem_contrato": 0, "nfcom": 0, "parametros_proprios": 0 } }
+        ]
+      }
+    },
+    {
+      "id": "c04",
+      "nome": "C-04 · Parâmetros próprios",
+      "descricao": "Documentos com override_contract_params: método e prazo do documento prevalecem sobre os do contrato.",
+      "definicao": {
+        "entidades": [
+          { "entidade": "fornecedor", "quantidade": 3 },
+          { "entidade": "contrato", "porPai": { "relacao": "fornecedor", "min": 1, "max": 1 }, "perfis": { "rad": 100, "fornecedor_recolhe": 0 } },
+          { "entidade": "documento", "quantidade": 6, "perfis": { "nfe_com_contrato": 0, "nfe_sem_contrato": 0, "nfcom": 0, "parametros_proprios": 100 } }
+        ]
+      }
+    },
+    {
+      "id": "c05",
+      "nome": "C-05 · Recusas de cadastro",
+      "descricao": "Casos de borda de fornecedor, contrato e documento, cada um com o resultado esperado.",
+      "definicao": {
+        "entidades": [
+          { "entidade": "fornecedor", "quantidade": 6, "casos": { "sem_razao_social": 1, "cnpj_invalido": 1, "cnpj_repetido": 1 } },
+          { "entidade": "contrato", "porPai": { "relacao": "fornecedor", "min": 1, "max": 1 }, "casos": { "vigencia_invertida": 1 } },
+          { "entidade": "documento", "quantidade": 8, "perfis": { "nfe_com_contrato": 100, "nfe_sem_contrato": 0, "nfcom": 0, "parametros_proprios": 0 }, "casos": { "contrato_inexistente": 1, "destinatario_fora": 1, "chave_repetida": 1, "chave_dv_invalido": 1, "sem_itens": 1 } }
+        ]
+      }
+    }
+  ]
+}

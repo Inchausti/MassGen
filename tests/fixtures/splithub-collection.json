@@ -1,0 +1,2070 @@
+{
+  "info": {
+    "_postman_id": "89e9723d-f63e-4689-bf0f-e825af5e22a1",
+    "name": "SplitHub API v1 (cliente ERP)",
+    "description": "Simula um cliente ERP: autentica por OAuth2 client_credentials, cadastra fornecedor e contrato, envia documentos fiscais (um, em lote e por arquivo) e consulta o resultado, com asserts em cada resposta. Rode a pasta inteira em ordem (Runner/newman). Veja o README.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 Autenticação",
+      "item": [
+        {
+          "name": "00.1 Obter token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"token Bearer válido por 720 s\", () => {",
+                  "  expect(body.token_type).to.equal(\"Bearer\");",
+                  "  expect(body.expires_in).to.equal(720);",
+                  "  expect(body.access_token).to.be.a(\"string\");",
+                  "});",
+                  "t(\"escopos incluem dfs:write\", () => expect(body.scope).to.include(\"dfs:write\"));",
+                  "if (status === 200 && body) {",
+                  "  set(\"access_token\", body.access_token);",
+                  "  set(\"token_expires_at\", String(Date.now() + body.expires_in * 1000));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"client_credentials\",\n  \"client_id\": \"{{client_id}}\",\n  \"client_secret\": \"{{client_secret}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/public/oauth/token",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "oauth",
+                "token"
+              ]
+            },
+            "description": "Troca client_id e client_secret por um token Bearer (JWT, 720 s). As demais requisições renovam o token sozinhas; esta serve para conferir as credenciais e os escopos."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 Fornecedores",
+      "item": [
+        {
+          "name": "01.1 Cadastrar fornecedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"201 Created\", () => expect(status).to.equal(201));",
+                  "t(\"fornecedor criado\", () => {",
+                  "  expect(body.id).to.match(/^forn_/);",
+                  "  expect(body.cnpj).to.equal(get(\"supplier_cnpj\"));",
+                  "  expect(body.legal_name).to.equal(get(\"supplier_name\"));",
+                  "  expect(body.status).to.be.a(\"string\");",
+                  "  expect(body.created_at).to.be.a(\"string\");",
+                  "});",
+                  "rl();",
+                  "if (status === 201 && body) set(\"supplier_id\", body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cnpj\": \"{{supplier_cnpj}}\",\n  \"legal_name\": \"{{supplier_name}}\",\n  \"trade_name\": \"Fornecedora Collection\",\n  \"founding_date\": \"2010-05-15\",\n  \"registration_status\": \"active\",\n  \"legal_nature\": \"206\",\n  \"tax_regime\": \"lucro_presumido\",\n  \"economic_activity\": \"4711302\",\n  \"address\": {\n    \"street\": \"Avenida Principal\",\n    \"number\": \"1000\",\n    \"complement\": \"Sala 200\",\n    \"neighborhood\": \"Centro\",\n    \"city\": \"São Paulo\",\n    \"state\": \"SP\",\n    \"zipcode\": \"01234567\"\n  },\n  \"contact\": {\n    \"email\": \"contato@fornecedora.com.br\",\n    \"phone\": \"1133334444\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers"
+              ]
+            },
+            "description": "Cria um fornecedor com CNPJ novo a cada rodada (só cnpj e legal_name são obrigatórios). Inicia uma nova rodada: gera o CNPJ do fornecedor e o id externo do contrato."
+          },
+          "response": []
+        },
+        {
+          "name": "01.2 Listar fornecedores",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"paginação\", () => {",
+                  "  expect(body.data).to.be.an(\"array\");",
+                  "  expect(body.page).to.equal(1);",
+                  "  expect(body.page_size).to.equal(20);",
+                  "  expect(body.total).to.be.at.least(1);",
+                  "  expect(body.total_pages).to.be.at.least(1);",
+                  "});",
+                  "t(\"traz o fornecedor cadastrado em 01.1\", () => {",
+                  "  const f = body.data.find((s) => s.cnpj === get(\"supplier_cnpj\"));",
+                  "  expect(f, \"fornecedor na lista\").to.be.ok;",
+                  "  expect(f.id).to.equal(get(\"supplier_id\"));",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers?page=1&page_size=20&legal_name={{supplier_name}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                },
+                {
+                  "key": "legal_name",
+                  "value": "{{supplier_name}}"
+                }
+              ]
+            },
+            "description": "Paginação por página (page, page_size até 100). O filtro legal_name é por substring, sem diferenciar maiúsculas."
+          },
+          "response": []
+        },
+        {
+          "name": "01.3 Consultar fornecedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"registro completo (14 campos, address e contact)\", () => {",
+                  "  [\"id\",\"cnpj\",\"legal_name\",\"trade_name\",\"founding_date\",\"registration_status\",\"legal_nature\",\"tax_regime\",\"economic_activity\",\"address\",\"contact\",\"status\",\"created_at\",\"updated_at\"].forEach((k) => expect(body, k).to.have.property(k));",
+                  "  expect(body.id).to.equal(get(\"supplier_id\"));",
+                  "  expect(body.cnpj).to.equal(get(\"supplier_cnpj\"));",
+                  "  [\"street\",\"number\",\"complement\",\"neighborhood\",\"city\",\"state\",\"zipcode\"].forEach((k) => expect(body.address, k).to.have.property(k));",
+                  "  [\"email\", \"phone\"].forEach((k) => expect(body.contact, k).to.have.property(k));",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers/{{supplier_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers",
+                "{{supplier_id}}"
+              ]
+            },
+            "description": "Dados completos do fornecedor criado em 01.1, com endereço e contato."
+          },
+          "response": []
+        },
+        {
+          "name": "01.4 Atualizar fornecedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"resposta {id, cnpj, trade_name, status, updated_at}\", () => {",
+                  "  [\"id\", \"cnpj\", \"trade_name\", \"status\", \"updated_at\"].forEach((k) => expect(body, k).to.have.property(k));",
+                  "  expect(body.trade_name).to.equal(\"Fornecedora Premium\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trade_name\": \"Fornecedora Premium\",\n  \"contact\": {\n    \"email\": \"novo@fornecedora.com.br\",\n    \"phone\": \"1144445555\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers/{{supplier_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers",
+                "{{supplier_id}}"
+              ]
+            },
+            "description": "Atualiza qualquer campo (dados cadastrais, endereço ou contato). Os demais campos ficam como estavam."
+          },
+          "response": []
+        },
+        {
+          "name": "01.5 Inativar fornecedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"situação inactive\", () => { expect(body.status).to.equal(\"inactive\"); expect(body).to.have.property(\"updated_at\"); });",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"inactive\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers/{{supplier_id}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers",
+                "{{supplier_id}}",
+                "status"
+              ]
+            },
+            "description": "Não há exclusão de fornecedor: para tirá-lo de uso, mude a situação para inactive."
+          },
+          "response": []
+        },
+        {
+          "name": "01.6 Contrato para fornecedor inativo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"409 Conflict\", () => expect(status).to.equal(409));",
+                  "t(\"supplier_inactive\", () => expect(body.error || body.code).to.equal(\"supplier_inactive\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"external_contract_id\": \"{{external_contract_id_2}}-INATIVO\",\n  \"description\": \"Contrato de fornecimento\",\n  \"buyer_cnpj\": \"{{buyer_cnpj}}\",\n  \"supplier_cnpj\": \"{{supplier_cnpj}}\",\n  \"start_date\": \"{{contract_start}}\",\n  \"end_date\": \"{{contract_end}}\",\n  \"total_value\": \"1000.00\",\n  \"payment_conditions\": \"30\",\n  \"payment_method\": \"rad\",\n  \"payment_term_days\": 30,\n  \"autorenew\": false,\n  \"rad_eligible\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts"
+              ]
+            },
+            "description": "Fornecedor inativo não recebe contrato novo: 409 supplier_inactive."
+          },
+          "response": []
+        },
+        {
+          "name": "01.7 Reativar fornecedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"situação active\", () => expect(body.status).to.equal(\"active\"));",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/suppliers/{{supplier_id}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "suppliers",
+                "{{supplier_id}}",
+                "status"
+              ]
+            },
+            "description": "Volta o fornecedor para uso."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 Contratos",
+      "item": [
+        {
+          "name": "02.1 Cadastrar contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"201 Created\", () => expect(status).to.equal(201));",
+                  "t(\"contrato criado e ativo\", () => {",
+                  "  expect(body.id).to.match(/^ctr_/);",
+                  "  expect(body.external_contract_id).to.equal(get(\"external_contract_id\"));",
+                  "  expect(body.status).to.equal(\"active\");",
+                  "});",
+                  "rl();",
+                  "if (status === 201 && body) set(\"contract_id\", body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"external_contract_id\": \"{{external_contract_id}}\",\n  \"description\": \"Contrato de fornecimento (collection)\",\n  \"buyer_cnpj\": \"{{buyer_cnpj}}\",\n  \"supplier_cnpj\": \"{{supplier_cnpj}}\",\n  \"start_date\": \"{{contract_start}}\",\n  \"end_date\": \"{{contract_end}}\",\n  \"total_value\": \"120000.00\",\n  \"payment_conditions\": \"30-60-90\",\n  \"payment_method\": \"rad\",\n  \"payment_term_days\": 30,\n  \"autorenew\": true,\n  \"rad_eligible\": true,\n  \"notes\": \"Criado pela collection\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts"
+              ]
+            },
+            "description": "Contrato RAD com o fornecedor criado em 01.1. A vigência é calculada a partir de hoje (início há 30 dias, fim em 365 dias), então o contrato está sempre em vigor. rad_eligible deve ser true quando payment_method é rad."
+          },
+          "response": []
+        },
+        {
+          "name": "02.2 Listar contratos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"paginação\", () => {",
+                  "  expect(body.data).to.be.an(\"array\");",
+                  "  expect(body.total).to.be.at.least(1);",
+                  "  expect(body.total_pages).to.be.at.least(1);",
+                  "});",
+                  "t(\"traz o contrato criado em 02.1, em vigor\", () => {",
+                  "  const c = body.data.find((x) => x.external_contract_id === get(\"external_contract_id\"));",
+                  "  expect(c, \"contrato na lista\").to.be.ok;",
+                  "  expect(c.status).to.equal(\"active\");",
+                  "  expect(c.term_status).to.equal(\"current\");",
+                  "  expect(c.payment_method).to.equal(\"rad\");",
+                  "  expect(c.supplier_cnpj).to.equal(get(\"supplier_cnpj\"));",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/contracts?supplier_cnpj={{supplier_cnpj}}&status=active&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts"
+              ],
+              "query": [
+                {
+                  "key": "supplier_cnpj",
+                  "value": "{{supplier_cnpj}}"
+                },
+                {
+                  "key": "status",
+                  "value": "active"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Filtros: status, buyer_cnpj, supplier_cnpj, from e to (contratos cujo período se sobrepõe a [from, to])."
+          },
+          "response": []
+        },
+        {
+          "name": "02.3 Consultar contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"registro completo (18 campos)\", () => {",
+                  "  [\"id\",\"external_contract_id\",\"description\",\"buyer_cnpj\",\"supplier_cnpj\",\"start_date\",\"end_date\",\"total_value\",\"payment_conditions\",\"payment_method\",\"payment_term_days\",\"autorenew\",\"rad_eligible\",\"status\",\"term_status\",\"notes\",\"created_at\",\"updated_at\"].forEach((k) => expect(body, k).to.have.property(k));",
+                  "  expect(body.id).to.equal(get(\"contract_id\"));",
+                  "  expect(body.term_status).to.equal(\"current\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id}}"
+              ]
+            },
+            "description": "Contrato completo, com payment_conditions, notes, term_status (calculado a cada leitura) e updated_at."
+          },
+          "response": []
+        },
+        {
+          "name": "02.4 Atualizar contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"resposta {id, external_contract_id, status, updated_at}\", () => {",
+                  "  [\"id\", \"external_contract_id\", \"status\", \"updated_at\"].forEach((k) => expect(body, k).to.have.property(k));",
+                  "  expect(body.status).to.equal(\"active\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"end_date\": \"{{contract_end}}\",\n  \"payment_conditions\": \"30-60-90-120\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id}}"
+              ]
+            },
+            "description": "Atualiza datas, valor, condições, método e prazo de pagamento ou observações. A situação não muda por aqui."
+          },
+          "response": []
+        },
+        {
+          "name": "02.5 Cadastrar contrato para o ciclo de situação",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"201 Created\", () => expect(status).to.equal(201));",
+                  "t(\"contrato ativo\", () => { expect(body.id).to.match(/^ctr_/); expect(body.status).to.equal(\"active\"); });",
+                  "rl();",
+                  "if (status === 201 && body) set(\"contract_id_status\", body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"external_contract_id\": \"{{external_contract_id_2}}\",\n  \"description\": \"Contrato para o ciclo de situação\",\n  \"buyer_cnpj\": \"{{buyer_cnpj}}\",\n  \"supplier_cnpj\": \"{{supplier_cnpj}}\",\n  \"start_date\": \"{{contract_start}}\",\n  \"end_date\": \"{{contract_end}}\",\n  \"total_value\": \"50000.00\",\n  \"payment_conditions\": \"30-60\",\n  \"payment_method\": \"supplier\",\n  \"payment_term_days\": 60,\n  \"autorenew\": false,\n  \"rad_eligible\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts"
+              ]
+            },
+            "description": "Segundo contrato do fornecedor, usado só para percorrer as situações sem tirar de vigor o contrato dos documentos."
+          },
+          "response": []
+        },
+        {
+          "name": "02.6 Suspender contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"resposta {id, external_contract_id, status, term_status, updated_at}\", () => {",
+                  "  [\"id\", \"external_contract_id\", \"status\", \"term_status\", \"updated_at\"].forEach((k) => expect(body, k).to.have.property(k));",
+                  "  expect(body.status).to.equal(\"suspended\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id_status}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id_status}}",
+                "status"
+              ]
+            },
+            "description": "active para suspended: suspensão temporária; o contrato pode voltar."
+          },
+          "response": []
+        },
+        {
+          "name": "02.7 Reativar contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"situação active\", () => expect(body.status).to.equal(\"active\"));",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id_status}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id_status}}",
+                "status"
+              ]
+            },
+            "description": "suspended para active."
+          },
+          "response": []
+        },
+        {
+          "name": "02.8 Encerrar contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"situação closed\", () => expect(body.status).to.equal(\"closed\"));",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"closed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id_status}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id_status}}",
+                "status"
+              ]
+            },
+            "description": "active ou suspended para closed: encerramento, terminal. Não há exclusão de contrato."
+          },
+          "response": []
+        },
+        {
+          "name": "02.9 Reabrir contrato encerrado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"409 Conflict\", () => expect(status).to.equal(409));",
+                  "t(\"invalid_status_transition\", () => expect(body.error || body.code).to.equal(\"invalid_status_transition\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/contracts/{{contract_id_status}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "contracts",
+                "{{contract_id_status}}",
+                "status"
+              ]
+            },
+            "description": "closed é terminal: qualquer transição fora da tabela responde 409 invalid_status_transition."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 Documentos fiscais",
+      "item": [
+        {
+          "name": "03.1 Enviar documento fiscal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "t(\"documento aceito\", () => {",
+                  "  expect(body.id).to.match(/^df_/);",
+                  "  expect([\"pending\", \"processing\", \"completed\"]).to.include(body.status);",
+                  "  expect(body.type).to.equal(\"nfe\");",
+                  "  expect(body.model).to.equal(\"55\");",
+                  "  expect(body.access_key).to.equal(get(\"access_key_new\"));",
+                  "});",
+                  "rl();",
+                  "if (status === 202 && body) {",
+                  "  set(\"document_id\", body.id);",
+                  "  set(\"access_key\", body.access_key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"nfe\",\n  \"model\": \"55\",\n  \"access_key\": \"{{access_key_new}}\",\n  \"identification\": {\n    \"number\": \"{{doc_number_new}}\",\n    \"series\": \"1\",\n    \"emission_date\": \"{{now_iso}}\"\n  },\n  \"emission\": {\n    \"cnpj\": \"{{supplier_cnpj}}\",\n    \"legal_name\": \"{{supplier_name}}\",\n    \"state\": \"SP\"\n  },\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}}\",\n    \"state\": \"{{buyer_state}}\"\n  },\n  \"items\": [\n    {\n      \"code\": \"SKU-1029\",\n      \"description\": \"Notebook\",\n      \"ncm\": \"84713012\",\n      \"cfop\": \"5102\",\n      \"quantity\": 2,\n      \"unit\": \"unit\",\n      \"unit_price\": \"3200.00\",\n      \"total_value\": \"6400.00\",\n      \"tax\": {\n        \"ibs_cbs\": {\n          \"cst\": \"000\",\n          \"c_class_trib\": \"000001\",\n          \"v_bc\": \"6400.00\",\n          \"g_ibs_uf\": {\n            \"p_ibs_uf\": \"0.05\",\n            \"v_ibs_uf\": \"3.20\"\n          },\n          \"g_ibs_mun\": {\n            \"p_ibs_mun\": \"0.05\",\n            \"v_ibs_mun\": \"3.20\"\n          },\n          \"g_cbs\": {\n            \"p_cbs\": \"0.9\",\n            \"v_cbs\": \"57.60\"\n          }\n        }\n      }\n    }\n  ],\n  \"total\": {\n    \"products_value\": \"6400.00\",\n    \"total_note_value\": \"6400.00\",\n    \"ibs_cbs_total\": {\n      \"v_bc\": \"6400.00\",\n      \"v_tot_ibs\": \"6.40\",\n      \"v_tot_cbs\": \"57.60\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ]
+            },
+            "description": "NF-e do fornecedor criado em 01.1 para a matriz do comprador. A chave de acesso (44 dígitos, com dígito verificador) é gerada a cada envio. Dinheiro e alíquotas vão como string; quantity como número. Resposta 202: o processamento é assíncrono."
+          },
+          "response": []
+        },
+        {
+          "name": "03.2 Enviar documento fiscal com contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "t(\"documento aceito\", () => {",
+                  "  expect(body.id).to.match(/^df_/);",
+                  "  expect(body.access_key).to.equal(get(\"access_key_contract\"));",
+                  "});",
+                  "rl();",
+                  "if (status === 202 && body) set(\"document_id_contract\", body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"nfe\",\n  \"model\": \"55\",\n  \"access_key\": \"{{access_key_contract}}\",\n  \"contract_id\": \"{{contract_id}}\",\n  \"identification\": {\n    \"number\": \"{{doc_number_contract}}\",\n    \"series\": \"1\",\n    \"emission_date\": \"{{now_iso}}\"\n  },\n  \"emission\": {\n    \"cnpj\": \"{{supplier_cnpj}}\",\n    \"legal_name\": \"{{supplier_name}}\",\n    \"state\": \"SP\"\n  },\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}}\",\n    \"state\": \"{{buyer_state}}\"\n  },\n  \"items\": [\n    {\n      \"code\": \"SKU-1029\",\n      \"description\": \"Notebook\",\n      \"ncm\": \"84713012\",\n      \"cfop\": \"5102\",\n      \"quantity\": 2,\n      \"unit\": \"unit\",\n      \"unit_price\": \"3200.00\",\n      \"total_value\": \"6400.00\",\n      \"tax\": {\n        \"ibs_cbs\": {\n          \"cst\": \"000\",\n          \"c_class_trib\": \"000001\",\n          \"v_bc\": \"6400.00\",\n          \"g_ibs_uf\": {\n            \"p_ibs_uf\": \"0.05\",\n            \"v_ibs_uf\": \"3.20\"\n          },\n          \"g_ibs_mun\": {\n            \"p_ibs_mun\": \"0.05\",\n            \"v_ibs_mun\": \"3.20\"\n          },\n          \"g_cbs\": {\n            \"p_cbs\": \"0.9\",\n            \"v_cbs\": \"57.60\"\n          }\n        }\n      }\n    }\n  ],\n  \"total\": {\n    \"products_value\": \"6400.00\",\n    \"total_note_value\": \"6400.00\",\n    \"ibs_cbs_total\": {\n      \"v_bc\": \"6400.00\",\n      \"v_tot_ibs\": \"6.40\",\n      \"v_tot_cbs\": \"57.60\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ]
+            },
+            "description": "Mesmo documento, vinculado ao contrato de 02.1 por contract_id. Use o id da API (ctr_…) devolvido na criação do contrato, e não o id externo. O contrato precisa estar ativo e em vigor na data de emissão (senão 422 contract_not_found / contract_not_in_force)."
+          },
+          "response": []
+        },
+        {
+          "name": "03.3 Consultar documento fiscal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"dados do documento\", () => {",
+                  "  expect(body.id).to.equal(get(\"document_id\"));",
+                  "  expect([\"pending\", \"processing\", \"completed\"]).to.include(body.status);",
+                  "  expect(body.access_key).to.equal(get(\"access_key\"));",
+                  "  expect(body.emission.cnpj).to.equal(get(\"supplier_cnpj\"));",
+                  "  expect(body.destination.cnpj_cpf).to.equal(get(\"buyer_cnpj\"));",
+                  "  expect(body.total_value).to.equal(\"6400.00\");",
+                  "  expect(body.ibs_cbs_total).to.be.an(\"object\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id}}"
+              ]
+            },
+            "description": "Acompanha o documento enviado em 03.1. No sandbox o status passa a completed ao ler."
+          },
+          "response": []
+        },
+        {
+          "name": "03.4 Consultar documento fiscal com contrato",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"vinculado ao contrato\", () => {",
+                  "  expect(body.id).to.equal(get(\"document_id_contract\"));",
+                  "  expect(body.contract_id).to.equal(get(\"contract_id\"));",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id_contract}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id_contract}}"
+              ]
+            },
+            "description": "Documento de 03.2: deve vir vinculado ao contrato."
+          },
+          "response": []
+        },
+        {
+          "name": "03.5 Listar documentos fiscais",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"paginação por cursor\", () => {",
+                  "  expect(body.data).to.be.an(\"array\");",
+                  "  expect(body.data.length).to.be.at.most(10);",
+                  "  expect(body.has_more).to.be.a(\"boolean\");",
+                  "  if (body.has_more) expect(body.next_cursor).to.be.a(\"string\");",
+                  "  else expect(body.next_cursor).to.equal(null);",
+                  "});",
+                  "t(\"cada item tem id, status, tipo e chave\", () => {",
+                  "  body.data.forEach((d) => {",
+                  "    expect(d.id).to.match(/^df_/);",
+                  "    expect(d.status).to.be.a(\"string\");",
+                  "    expect(d.type).to.equal(\"nfe\");",
+                  "    expect(d.access_key).to.have.length(44);",
+                  "  });",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents?type=nfe&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "nfe"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Paginação por cursor: limit (padrão 50, máximo 100) e cursor (devolvido em next_cursor). with_total=true conta no limite das rotas pesadas (20 por minuto)."
+          },
+          "response": []
+        },
+        {
+          "name": "03.6 Enviar documentos em lote",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "t(\"lote aceito\", () => {",
+                  "  expect(body.batch_id).to.match(/^batch_/);",
+                  "  expect(body.total_documents).to.equal(2);",
+                  "  expect(body.documents).to.have.length(2);",
+                  "  expect([\"processing\", \"completed\", \"completed_with_errors\"]).to.include(body.status);",
+                  "  body.documents.forEach((d) => expect(d.id).to.match(/^df_/));",
+                  "});",
+                  "rl();",
+                  "if (status === 202 && body) set(\"batch_id\", body.batch_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documents\": [\n    {\n      \"type\": \"nfe\",\n      \"model\": \"55\",\n      \"access_key\": \"{{access_key_batch_1}}\",\n      \"identification\": {\n        \"number\": \"{{doc_number_batch_1}}\",\n        \"series\": \"1\",\n        \"emission_date\": \"{{now_iso}}\"\n      },\n      \"emission\": {\n        \"cnpj\": \"{{supplier_cnpj}}\",\n        \"legal_name\": \"{{supplier_name}}\",\n        \"state\": \"SP\"\n      },\n      \"destination\": {\n        \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n        \"name\": \"{{buyer_name}}\",\n        \"state\": \"{{buyer_state}}\"\n      },\n      \"items\": [\n        {\n          \"code\": \"SKU-1029\",\n          \"description\": \"Notebook\",\n          \"ncm\": \"84713012\",\n          \"cfop\": \"5102\",\n          \"quantity\": 2,\n          \"unit\": \"unit\",\n          \"unit_price\": \"3200.00\",\n          \"total_value\": \"6400.00\",\n          \"tax\": {\n            \"ibs_cbs\": {\n              \"cst\": \"000\",\n              \"c_class_trib\": \"000001\",\n              \"v_bc\": \"6400.00\",\n              \"g_ibs_uf\": {\n                \"p_ibs_uf\": \"0.05\",\n                \"v_ibs_uf\": \"3.20\"\n              },\n              \"g_ibs_mun\": {\n                \"p_ibs_mun\": \"0.05\",\n                \"v_ibs_mun\": \"3.20\"\n              },\n              \"g_cbs\": {\n                \"p_cbs\": \"0.9\",\n                \"v_cbs\": \"57.60\"\n              }\n            }\n          }\n        }\n      ],\n      \"total\": {\n        \"products_value\": \"6400.00\",\n        \"total_note_value\": \"6400.00\",\n        \"ibs_cbs_total\": {\n          \"v_bc\": \"6400.00\",\n          \"v_tot_ibs\": \"6.40\",\n          \"v_tot_cbs\": \"57.60\"\n        }\n      }\n    },\n    {\n      \"type\": \"nfe\",\n      \"model\": \"55\",\n      \"access_key\": \"{{access_key_batch_2}}\",\n      \"identification\": {\n        \"number\": \"{{doc_number_batch_2}}\",\n        \"series\": \"1\",\n        \"emission_date\": \"{{now_iso}}\"\n      },\n      \"emission\": {\n        \"cnpj\": \"{{supplier_cnpj}}\",\n        \"legal_name\": \"{{supplier_name}}\",\n        \"state\": \"SP\"\n      },\n      \"destination\": {\n        \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n        \"name\": \"{{buyer_name}}\",\n        \"state\": \"{{buyer_state}}\"\n      },\n      \"items\": [\n        {\n          \"code\": \"SKU-1029\",\n          \"description\": \"Notebook\",\n          \"ncm\": \"84713012\",\n          \"cfop\": \"5102\",\n          \"quantity\": 2,\n          \"unit\": \"unit\",\n          \"unit_price\": \"3200.00\",\n          \"total_value\": \"6400.00\",\n          \"tax\": {\n            \"ibs_cbs\": {\n              \"cst\": \"000\",\n              \"c_class_trib\": \"000001\",\n              \"v_bc\": \"6400.00\",\n              \"g_ibs_uf\": {\n                \"p_ibs_uf\": \"0.05\",\n                \"v_ibs_uf\": \"3.20\"\n              },\n              \"g_ibs_mun\": {\n                \"p_ibs_mun\": \"0.05\",\n                \"v_ibs_mun\": \"3.20\"\n              },\n              \"g_cbs\": {\n                \"p_cbs\": \"0.9\",\n                \"v_cbs\": \"57.60\"\n              }\n            }\n          }\n        }\n      ],\n      \"total\": {\n        \"products_value\": \"6400.00\",\n        \"total_note_value\": \"6400.00\",\n        \"ibs_cbs_total\": {\n          \"v_bc\": \"6400.00\",\n          \"v_tot_ibs\": \"6.40\",\n          \"v_tot_cbs\": \"57.60\"\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/batch",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "batch"
+              ]
+            },
+            "description": "Até 500 documentos por lote. Um documento com estrutura inválida derruba o lote inteiro (400); uma rejeição de negócio (contrato inexistente, chave duplicada) marca só aquele documento com status error. Rota pesada: 20 por minuto."
+          },
+          "response": []
+        },
+        {
+          "name": "03.7 Consultar lote",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"lote com os 2 documentos\", () => {",
+                  "  expect(body.batch_id).to.equal(get(\"batch_id\"));",
+                  "  expect(body.total_documents).to.equal(2);",
+                  "  expect(body.documents).to.have.length(2);",
+                  "  expect([\"processing\", \"completed\", \"completed_with_errors\"]).to.include(body.status);",
+                  "});",
+                  "t(\"nenhum documento rejeitado\", () => {",
+                  "  body.documents.forEach((d) => expect(d.status, d.id + \" \" + JSON.stringify(d.failure || \"\")).to.not.equal(\"error\"));",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/batch/{{batch_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "batch",
+                "{{batch_id}}"
+              ]
+            },
+            "description": "Acompanha o lote enviado em 03.6."
+          },
+          "response": []
+        },
+        {
+          "name": "03.8 Enviar NFCom",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "t(\"documento aceito\", () => { expect(body.id).to.match(/^df_/); expect(body.type).to.equal(\"nfcom\"); expect(body.model).to.equal(\"62\"); });",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"nfcom\",\n  \"model\": \"62\",\n  \"access_key\": \"{{access_key_contract}}\",\n  \"competence_date\": \"{{contract_start}}\",\n  \"identification\": {\n    \"number\": \"{{doc_number_contract}}\",\n    \"series\": \"1\",\n    \"emission_date\": \"{{now_iso}}\"\n  },\n  \"emission\": {\n    \"cnpj\": \"{{supplier_cnpj}}\",\n    \"legal_name\": \"{{supplier_name}}\",\n    \"state\": \"SP\"\n  },\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}}\",\n    \"state\": \"{{buyer_state}}\"\n  },\n  \"items\": [\n    {\n      \"code\": \"SERV-0101\",\n      \"description\": \"Serviço de telefonia móvel corporativo\",\n      \"service_type\": \"mobile_telephony\",\n      \"cfop\": \"5302\",\n      \"quantity\": 1,\n      \"unit\": \"month\",\n      \"unit_price\": \"850.00\",\n      \"total_value\": \"850.00\",\n      \"tax\": {\n        \"ibs_cbs\": {\n          \"cst\": \"10\",\n          \"c_class_trib\": \"0101\",\n          \"v_bc\": \"850.00\",\n          \"g_ibs_uf\": {\n            \"p_ibs_uf\": \"0.05\",\n            \"v_ibs_uf\": \"4.25\"\n          },\n          \"g_ibs_mun\": {\n            \"p_ibs_mun\": \"0.05\",\n            \"v_ibs_mun\": \"4.25\"\n          },\n          \"g_cbs\": {\n            \"p_cbs\": \"0.9\",\n            \"v_cbs\": \"76.50\"\n          }\n        }\n      }\n    }\n  ],\n  \"total\": {\n    \"services_value\": \"850.00\",\n    \"total_note_value\": \"850.00\",\n    \"ibs_cbs_total\": {\n      \"v_bc\": \"850.00\",\n      \"v_tot_ibs\": \"8.50\",\n      \"v_tot_cbs\": \"76.50\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ]
+            },
+            "description": "NFCom (modelo 62), exemplo da página: serviços (service_type, unit month), competence_date obrigatória e cst de 2 dígitos. Os 14 tipos de DF-e seguem o mesmo corpo, com o modelo correspondente."
+          },
+          "response": []
+        },
+        {
+          "name": "03.9 Enviar documento com método e prazo próprios",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "t(\"documento aceito\", () => expect(body.id).to.match(/^df_/));",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"nfe\",\n  \"model\": \"55\",\n  \"access_key\": \"{{access_key_batch_2}}\",\n  \"contract_id\": \"{{contract_id}}\",\n  \"override_contract_params\": true,\n  \"payment_method\": \"supplier\",\n  \"payment_term_days\": 45,\n  \"identification\": {\n    \"number\": \"{{doc_number_batch_2}}\",\n    \"series\": \"1\",\n    \"emission_date\": \"{{now_iso}}\"\n  },\n  \"emission\": {\n    \"cnpj\": \"{{supplier_cnpj}}\",\n    \"legal_name\": \"{{supplier_name}}\",\n    \"state\": \"SP\"\n  },\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}}\",\n    \"state\": \"{{buyer_state}}\"\n  },\n  \"items\": [\n    {\n      \"code\": \"SKU-1029\",\n      \"description\": \"Notebook\",\n      \"ncm\": \"84713012\",\n      \"cfop\": \"5102\",\n      \"quantity\": 2,\n      \"unit\": \"unit\",\n      \"unit_price\": \"3200.00\",\n      \"total_value\": \"6400.00\",\n      \"tax\": {\n        \"ibs_cbs\": {\n          \"cst\": \"000\",\n          \"c_class_trib\": \"000001\",\n          \"v_bc\": \"6400.00\",\n          \"g_ibs_uf\": {\n            \"p_ibs_uf\": \"0.05\",\n            \"v_ibs_uf\": \"3.20\"\n          },\n          \"g_ibs_mun\": {\n            \"p_ibs_mun\": \"0.05\",\n            \"v_ibs_mun\": \"3.20\"\n          },\n          \"g_cbs\": {\n            \"p_cbs\": \"0.9\",\n            \"v_cbs\": \"57.60\"\n          }\n        }\n      }\n    }\n  ],\n  \"total\": {\n    \"products_value\": \"6400.00\",\n    \"total_note_value\": \"6400.00\",\n    \"ibs_cbs_total\": {\n      \"v_bc\": \"6400.00\",\n      \"v_tot_ibs\": \"6.40\",\n      \"v_tot_cbs\": \"57.60\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ]
+            },
+            "description": "override_contract_params=true substitui, neste documento, o payment_method e o payment_term_days do contrato; nesse caso os dois campos são obrigatórios."
+          },
+          "response": []
+        },
+        {
+          "name": "03.10 Enviar documento com destinatário fora da organização",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"202 Accepted\", () => expect(status).to.equal(202));",
+                  "rl();",
+                  "if (status === 202 && body) set(\"document_id_stray\", body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"nfe\",\n  \"model\": \"55\",\n  \"access_key\": \"{{access_key_batch_1}}\",\n  \"identification\": {\n    \"number\": \"{{doc_number_batch_1}}\",\n    \"series\": \"1\",\n    \"emission_date\": \"{{now_iso}}\"\n  },\n  \"emission\": {\n    \"cnpj\": \"{{supplier_cnpj}}\",\n    \"legal_name\": \"{{supplier_name}}\",\n    \"state\": \"SP\"\n  },\n  \"destination\": {\n    \"cnpj_cpf\": \"{{stray_cnpj}}\",\n    \"name\": \"Destinatário fora da organização\",\n    \"state\": \"RJ\"\n  },\n  \"items\": [\n    {\n      \"code\": \"SKU-1029\",\n      \"description\": \"Notebook\",\n      \"ncm\": \"84713012\",\n      \"cfop\": \"5102\",\n      \"quantity\": 2,\n      \"unit\": \"unit\",\n      \"unit_price\": \"3200.00\",\n      \"total_value\": \"6400.00\",\n      \"tax\": {\n        \"ibs_cbs\": {\n          \"cst\": \"000\",\n          \"c_class_trib\": \"000001\",\n          \"v_bc\": \"6400.00\",\n          \"g_ibs_uf\": {\n            \"p_ibs_uf\": \"0.05\",\n            \"v_ibs_uf\": \"3.20\"\n          },\n          \"g_ibs_mun\": {\n            \"p_ibs_mun\": \"0.05\",\n            \"v_ibs_mun\": \"3.20\"\n          },\n          \"g_cbs\": {\n            \"p_cbs\": \"0.9\",\n            \"v_cbs\": \"57.60\"\n          }\n        }\n      }\n    }\n  ],\n  \"total\": {\n    \"products_value\": \"6400.00\",\n    \"total_note_value\": \"6400.00\",\n    \"ibs_cbs_total\": {\n      \"v_bc\": \"6400.00\",\n      \"v_tot_ibs\": \"6.40\",\n      \"v_tot_cbs\": \"57.60\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents"
+              ]
+            },
+            "description": "O envio é aceito (202) e a recusa de negócio vem no processamento: o documento termina em status error, com o motivo em failure."
+          },
+          "response": []
+        },
+        {
+          "name": "03.11 Consultar documento rejeitado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"status error com failure.code recipient_not_registered\", () => {",
+                  "  expect(body.status).to.equal(\"error\");",
+                  "  expect(body.failure.code).to.equal(\"recipient_not_registered\");",
+                  "  expect(body.failure.message).to.be.a(\"string\");",
+                  "});",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id_stray}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id_stray}}"
+              ]
+            },
+            "description": "Status error com failure {code, message}: recipient_not_registered."
+          },
+          "response": []
+        },
+        {
+          "name": "03.12 Corrigir documento rejeitado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "const rl = () => t(\"headers RateLimit-* presentes\", () => {",
+                  "  [\"ratelimit-limit\", \"ratelimit-remaining\", \"ratelimit-reset\"].forEach((h) => expect(header(h), h).to.be.ok);",
+                  "});",
+                  "t(\"200 OK\", () => expect(status).to.equal(200));",
+                  "t(\"destinatário corrigido\", () => { expect(body.id).to.equal(get(\"document_id_stray\")); expect(body.destination.cnpj_cpf).to.equal(get(\"buyer_cnpj\")); });",
+                  "rl();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id_stray}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id_stray}}"
+              ]
+            },
+            "description": "Só é possível atualizar documento com status pending ou error (exemplo da página: dados do destinatário)."
+          },
+          "response": []
+        },
+        {
+          "name": "03.13 Atualizar documento concluído",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"409 Conflict\", () => expect(status).to.equal(409));",
+                  "t(\"invalid_status_transition\", () => expect(body.error || body.code).to.equal(\"invalid_status_transition\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": {\n    \"cnpj_cpf\": \"{{buyer_cnpj}}\",\n    \"name\": \"{{buyer_name}} - Matriz\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id}}"
+              ]
+            },
+            "description": "Documentos completed são imutáveis, refletindo a legislação fiscal: 409 invalid_status_transition."
+          },
+          "response": []
+        },
+        {
+          "name": "03.14 Remover documento fiscal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"204 No Content\", () => expect(status).to.equal(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id_stray}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id_stray}}"
+              ]
+            },
+            "description": "Remove o registro de ingestão do Splithub (não cancela o documento junto ao Fisco)."
+          },
+          "response": []
+        },
+        {
+          "name": "03.15 Consultar documento removido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const get = (k) => pm.variables.get(k);",
+                  "const set = (k, v) => pm.environment.set(k, v);",
+                  "const local = (k, v) => pm.variables.set(k, v);",
+                  "const name = pm.info.requestName;",
+                  "const status = pm.response.code;",
+                  "let body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "const header = (n) => pm.response.headers.get(n);",
+                  "const t = (n, f) => pm.test(n, f);",
+                  "const expect = pm.expect;",
+                  "const nodata = (what) => pm.test(\"SEM DADOS: \" + what, () => {});",
+                  "t(\"404 Not Found\", () => expect(status).to.equal(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/fiscal-documents/{{document_id_stray}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "fiscal-documents",
+                "{{document_id_stray}}"
+              ]
+            },
+            "description": "Depois de removido, o documento deixa de existir: 404 not_found."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const get = (k) => pm.variables.get(k);",
+          "const set = (k, v) => pm.environment.set(k, v);",
+          "const local = (k, v) => pm.variables.set(k, v);",
+          "const name = pm.info.requestName;",
+          "const pad = (n, w) => String(n).padStart(w, \"0\");",
+          "const rnd = (w) => pad(Math.floor(Math.random() * Math.pow(10, w)), w);",
+          "const alnum = (n) => { const c = \"abcdefghijklmnopqrstuvwxyz0123456789\"; let s = \"\"; for (let i = 0; i < n; i++) s += c[Math.floor(Math.random() * c.length)]; return s; };",
+          "// NF-e access key check digit: modulo 11, weights 2..9 from the right",
+          "const dv = (base) => { let sum = 0, w = 2; for (let i = base.length - 1; i >= 0; i--) { sum += Number(base[i]) * w; w = w === 9 ? 2 : w + 1; } const r = sum % 11; return r < 2 ? 0 : 11 - r; };",
+          "const accessKey = (cnpj) => { const d = new Date(); const base = \"35\" + pad(d.getFullYear() % 100, 2) + pad(d.getMonth() + 1, 2) + cnpj + \"55\" + \"001\" + rnd(9) + \"1\" + rnd(8); return base + dv(base); };",
+          "const day = (off) => new Date(Date.now() + off * 864e5).toISOString().slice(0, 10);",
+          "const SEED_SUPPLIER = get(\"fallback_supplier_cnpj\") || \"28447821000135\";",
+          "",
+          "// a new supplier (and its contract id) for each run, started by 01.1",
+          "const newRun = () => {",
+          "  const id = Date.now(); const run = id.toString(36).toUpperCase();",
+          "  set(\"run_id\", run);",
+          "  set(\"supplier_cnpj\", \"9\" + pad(id, 13).slice(-13));",
+          "  set(\"supplier_name\", \"FornecedoraCollection\" + run);",
+          "  set(\"external_contract_id\", \"CTR-\" + run);",
+          "};",
+          "// the idempotency scenario (05.4 to 05.6) has its own supplier and key",
+          "const newIdem = () => {",
+          "  const id = Date.now();",
+          "  set(\"idem_supplier_cnpj\", \"8\" + pad(id, 13).slice(-13));",
+          "  set(\"idem_supplier_name\", \"IdempotenciaCollection\" + id.toString(36).toUpperCase());",
+          "  set(\"idem_fixed_key\", \"idem-\" + alnum(24));",
+          "};",
+          "if (name.indexOf(\"01.1\") === 0 || !get(\"supplier_cnpj\")) newRun();",
+          "if (name.indexOf(\"05.4\") === 0 || !get(\"idem_fixed_key\")) newIdem();",
+          "",
+          "const issuer = get(\"supplier_cnpj\") || SEED_SUPPLIER;",
+          "local(\"idem_key\", \"idem-\" + alnum(24));",
+          "local(\"now_iso\", new Date(Date.now() - 3 * 3600 * 1000).toISOString().replace(/\\.\\d{3}Z$/, \"-03:00\"));",
+          "local(\"today\", day(0).replace(/-/g, \"\"));",
+          "local(\"contract_start\", day(-30));",
+          "local(\"contract_end\", day(365));",
+          "local(\"external_contract_id_2\", (get(\"external_contract_id\") || \"CTR\") + \"-S\");",
+          "local(\"stray_cnpj\", \"6\" + pad(Date.now(), 13).slice(-13));",
+          "[\"new\", \"batch_1\", \"batch_2\", \"contract\"].forEach((s) => {",
+          "  local(\"access_key_\" + s, accessKey(issuer));",
+          "  local(\"doc_number_\" + s, String(Number(rnd(9)) + 1));",
+          "});",
+          "",
+          "// OAuth2 client_credentials: fetch the token when missing or about to expire (TTL 720 s)",
+          "const expiresAt = Number(get(\"token_expires_at\") || 0);",
+          "if (name !== \"00.1 Obter token\" && (!get(\"access_token\") || Date.now() > expiresAt - 120000)) {",
+          "  const id = get(\"client_id\"), secret = get(\"client_secret\");",
+          "  if (!id || !secret) throw new Error(\"Defina client_id e client_secret no environment (veja o README).\");",
+          "  pm.sendRequest({",
+          "    url: get(\"base_url\") + \"/public/oauth/token\",",
+          "    method: \"POST\",",
+          "    header: { \"Content-Type\": \"application/json\" },",
+          "    body: { mode: \"raw\", raw: JSON.stringify({ grant_type: \"client_credentials\", client_id: id, client_secret: secret }) },",
+          "  }, (err, resp) => {",
+          "    if (err || resp.code !== 200) throw new Error(\"Falha ao obter o token: \" + (err || resp.code + \" \" + resp.text()));",
+          "    const b = resp.json();",
+          "    set(\"access_token\", b.access_token);",
+          "    set(\"token_expires_at\", String(Date.now() + b.expires_in * 1000));",
+          "  });",
+          "}",
+          "",
+          "// webhook subscriptions: 25 per company and no deletion, so remember the one this collection created before",
+          "if (name.indexOf(\"09.1 \") === 0 || name.indexOf(\"10.1 \") === 0) {",
+          "  const want = name.indexOf(\"09.1 \") === 0 ? \"ERP — contas a pagar\" : \"Retorno das automações\";",
+          "  const key = name.indexOf(\"09.1 \") === 0 ? \"subscription_id_existing\" : \"automation_subscription_id_existing\";",
+          "  pm.sendRequest({ url: get(\"base_url\") + \"/v1/webhook-subscriptions?page=1&page_size=100\", method: \"GET\", header: { Authorization: \"Bearer \" + get(\"access_token\") } }, (err, resp) => {",
+          "    const hit = !err && resp.code === 200 ? resp.json().data.find((x) => x.description === want) : null;",
+          "    set(key, hit ? hit.id : \"\");",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ]
+}
