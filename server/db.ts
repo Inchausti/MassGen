@@ -289,6 +289,10 @@ const MIGRACOES: string[] = [
   ALTER TABLE destinos ADD COLUMN environment_versao_id TEXT REFERENCES api_versoes(id) ON DELETE SET NULL;
   CREATE INDEX destinos_ambiente ON destinos (ambiente_id);
   `,
+  // 5 — cadastro ligado ao cadastro pai pela chave da integração (ex.: contrato -> fornecedor pelo CNPJ)
+  `
+  ALTER TABLE cadastros ADD COLUMN pais TEXT NOT NULL DEFAULT '{}';
+  `,
 ];
 
 function migrar(): void {

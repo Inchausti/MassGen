@@ -9,7 +9,7 @@ import type { Conferencia, DefinicaoCenario, Esperado, ModeloEntidade } from '..
 import { obterCenario } from './cenarios.ts';
 import { obterDestino } from './destinos.ts';
 import { modelosDoPacote } from './pacotes.ts';
-import { cadastrosParaGeracao, criarCadastro, vincular } from './cadastros.ts';
+import { cadastrosParaGeracao, criarCadastro, fecharCadastros, ligacoesDo, vincular } from './cadastros.ts';
 import { obterPacote } from './pacotes.ts';
 import { sha256, usuarioAtual } from '../auditoria.ts';
 
@@ -72,11 +72,13 @@ export async function gerarExecucao(cenarioId: string, opcoes: { semente?: numbe
   const dataReferencia = opcoes.dataReferencia || definicao.dataReferencia || hojeEmBrasilia();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dataReferencia)) throw new ErroHttp(422, 'Data de referência: use AAAA-MM-DD.');
   const codigo = novoCodigo();
-  const ids = definicao.entidades.flatMap((e) => e.cadastros ?? []);
+  // Os cadastros pai que os escolhidos exigem (o fornecedor do contrato) entram junto, antes deles.
+  const { definicao: completa } = fecharCadastros(definicao);
+  const ids = completa.entidades.flatMap((e) => e.cadastros ?? []);
   let resultado;
   try {
     resultado = await gerarMassa({
-      modelos, cenario: definicao, semente, dataReferencia, codigoExecucao: codigo, variaveis: destino.variaveis,
+      modelos, cenario: completa, semente, dataReferencia, codigoExecucao: codigo, variaveis: destino.variaveis,
       cadastros: cadastrosParaGeracao(ids, destinoId),
     });
   } catch (e) {
@@ -95,7 +97,7 @@ export async function gerarExecucao(cenarioId: string, opcoes: { semente?: numbe
       `INSERT INTO execucoes (id, codigo, cenario_id, cenario_nome, cenario, destino_id, semente, data_referencia, status, etapa, erro, criado_em,
          criado_por, pacote_id, pacote_versao, modelos_hash, destino_snapshot)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'gerada', NULL, ?, ?, ?, ?, ?, ?, ?)`,
-      id, codigo, cen.id, cen.nome, JSON.stringify(definicao), destinoId, semente, dataReferencia,
+      id, codigo, cen.id, cen.nome, JSON.stringify(completa), destinoId, semente, dataReferencia,
       resultado.avisos.length ? JSON.stringify(resultado.avisos) : null, t,
       usuarioAtual().usuario, cen.pacoteId, pacote?.versao ?? null, sha256(JSON.stringify(modelos)), JSON.stringify(retrato),
     );
@@ -203,13 +205,25 @@ export async function editarRegistro(id: string, dados: Record<string, unknown>)
   return obterRegistro(id);
 }
 
-export async function salvarComoCadastro(registroId: string, etiquetas: string[] = []) {
+// Salva um registro da massa como cadastro. Se a integração exige um pai que ainda não é cadastro (o fornecedor de um
+// contrato gerado), o pai é salvo antes, do mesmo jeito.
+export async function salvarComoCadastro(registroId: string, etiquetas: string[] = []): Promise<Awaited<ReturnType<typeof criarCadastro>> & { paisSalvos: { id: string; rotulo: string; entidade: string }[] }> {
   const r = obterRegistro(registroId);
   const exe = obterExecucaoLinha(r.execucaoId);
   const cen = exe.cenario_id ? um<{ pacote_id: string }>('SELECT pacote_id FROM cenarios WHERE id = ?', exe.cenario_id as string) : undefined;
-  const cad = await criarCadastro({ pacoteId: cen?.pacote_id ?? null, entidade: r.entidade, rotulo: r.rotulo, dados: r.dados, etiquetas });
+  const pacoteId = (cen?.pacote_id ?? exe.pacote_id ?? null) as string | null;
+  const paisSalvos: { id: string; rotulo: string; entidade: string }[] = [];
+  for (const lig of ligacoesDo(pacoteId, r.entidade, r.dados)) {
+    const regPai = r.pais?.[lig.relacao];
+    if (!lig.problema || !regPai) continue;
+    const pai = obterRegistro(regPai);
+    if (pai.cadastroId) continue;
+    const salvo = await salvarComoCadastro(regPai, etiquetas);
+    paisSalvos.push(...salvo.paisSalvos, { id: salvo.id, rotulo: salvo.rotulo, entidade: salvo.entidade });
+  }
+  const cad = await criarCadastro({ pacoteId, entidade: r.entidade, rotulo: r.rotulo, dados: r.dados, etiquetas });
   if (r.idRemoto && exe.destino_id && r.resultado === 'ok') vincular(cad.id, exe.destino_id as string, r.idRemoto, r.execucaoId);
-  return cad;
+  return { ...cad, paisSalvos };
 }
 
 export function removerExecucao(id: string): void {

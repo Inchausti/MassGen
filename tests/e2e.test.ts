@@ -381,12 +381,63 @@ test('integração pela biblioteca: cliente herda o ambiente; ente emulado aguar
   assert.ok(trilha.itens?.length ?? trilha.length, 'a importação para a biblioteca entra na trilha');
 });
 
+test('cadastros: o contrato só é salvo ligado a um fornecedor cadastrado, e o cenário leva o fornecedor junto', async () => {
+  const modelos = await api('GET', '/modelos?pacote=splithub');
+  const idDe = (nome: string) => modelos.find((m: any) => m.nome === nome).id;
+  const [exF] = await api('POST', `/modelos/${idDe('fornecedor')}/exemplo`, { semente: 7101, destinoId });
+  const [exC] = await api('POST', `/modelos/${idDe('contrato')}/exemplo`, { semente: 7101, destinoId });
+  const cnpj = String(exF.dados.cnpj);
+
+  const semFornecedor = await chamar(API, 'POST', '/cadastros', { cookie: cookieRoot, corpo: { pacoteId: 'splithub', entidade: 'contrato', dados: { ...exC.dados, supplier_cnpj: '' } } });
+  assert.equal(semFornecedor.status, 422);
+  assert.match(semFornecedor.corpo.erro, /ligado a um fornecedor cadastrado/);
+  assert.match(semFornecedor.corpo.detalhes[0], /escolha o fornecedor cadastrado/);
+  const naoCadastrado = await chamar(API, 'POST', '/cadastros', { cookie: cookieRoot, corpo: { pacoteId: 'splithub', entidade: 'contrato', dados: { ...exC.dados, supplier_cnpj: cnpj } } });
+  assert.equal(naoCadastrado.status, 422, 'o fornecedor ainda não é cadastro');
+  assert.match(naoCadastrado.corpo.detalhes[0], /não é o cnpj de nenhum fornecedor cadastrado/);
+
+  const forn = await api('POST', '/cadastros', { pacoteId: 'splithub', entidade: 'fornecedor', dados: exF.dados });
+  const cont = await api('POST', '/cadastros', { pacoteId: 'splithub', entidade: 'contrato', dados: { ...exC.dados, supplier_cnpj: cnpj } });
+  assert.equal(cont.ligacoes[0].cadastroId, forn.id);
+  assert.deepEqual(cont.pendencias, []);
+  const mascarado = `${cnpj.slice(0, 2)}.${cnpj.slice(2, 5)}.${cnpj.slice(5, 8)}/${cnpj.slice(8, 12)}-${cnpj.slice(12)}`;
+  const outro = await api('POST', '/cadastros', { pacoteId: 'splithub', entidade: 'contrato', dados: { ...exC.dados, external_contract_id: 'MASCARA-1', supplier_cnpj: mascarado } });
+  assert.equal(outro.ligacoes[0].cadastroId, forn.id, 'CNPJ com máscara é o mesmo CNPJ');
+  await assert.rejects(api('DELETE', `/cadastros/${forn.id}`), /ligados a este/);
+  await assert.rejects(api('PUT', `/cadastros/${forn.id}`, { dados: { ...exF.dados, cnpj: '11444777000161' } }), /Mude neles antes/);
+  await api('DELETE', `/cadastros/${outro.id}`);
+
+  // Só o contrato cadastrado e um documento gerado: o fornecedor do contrato entra junto, antes dele.
+  const cen = await api('POST', '/cenarios', {
+    nome: 'Contrato cadastrado', pacoteId: 'splithub', destinoId,
+    definicao: { entidades: [{ entidade: 'contrato', quantidade: 0, cadastros: [cont.id] }, { entidade: 'documento', quantidade: 1 }] },
+  });
+  const exe = await api('POST', `/cenarios/${cen.id}/gerar`, { semente: 7102 });
+  const regs = (await api('GET', `/execucoes/${exe.id}/registros`)).itens;
+  assert.deepEqual(regs.map((r: any) => r.entidade).sort(), ['contrato', 'documento', 'fornecedor']);
+  const regForn = regs.find((r: any) => r.entidade === 'fornecedor');
+  assert.equal(regForn.cadastroId, forn.id);
+  assert.equal(regs.find((r: any) => r.entidade === 'contrato').pais.fornecedor, regForn.id);
+  assert.equal(regs.find((r: any) => r.entidade === 'documento').dados.emission.cnpj, cnpj, 'o documento sai pelo fornecedor do contrato');
+  await api('POST', `/execucoes/${exe.id}/enviar`);
+  const fim = await esperarFim(exe.id);
+  assert.equal(fim.status, 'concluida', JSON.stringify(fim));
+  assert.equal(fim.ok, 3, JSON.stringify(fim));
+
+  // Salvar um contrato gerado como cadastro salva antes o fornecedor dele.
+  const c01 = (await api('GET', '/execucoes')).find((e: any) => e.cenarioNome.startsWith('C-01'));
+  const regC01 = (await api('GET', `/execucoes/${c01.id}/registros`)).itens.find((r: any) => r.entidade === 'contrato');
+  const salvo = await api('POST', `/registros/${regC01.id}/salvar-cadastro`, {});
+  assert.deepEqual(salvo.paisSalvos.map((p: any) => p.entidade), ['fornecedor']);
+  assert.equal(salvo.ligacoes[0].cadastroId, salvo.paisSalvos[0].id);
+});
+
 test('rastreabilidade: o e-mail de quem entrou na trilha, código de rastreio por chamada e pacote de evidências', async () => {
   const execs = await api('GET', '/execucoes');
   const c01 = execs.find((e: any) => e.cenarioNome.startsWith('C-01'));
   assert.equal(c01.criadoPor, ROOT);
   assert.equal(c01.enviadoPor, ROOT);
-  assert.equal(c01.pacoteVersao, '1.0.0');
+  assert.equal(c01.pacoteVersao, '1.1.0');
   assert.equal(c01.destinoRetrato.baseUrl, `http://localhost:${PORTA_MOCK}`);
   assert.ok(!JSON.stringify(c01.destinoRetrato).includes('massgen-segredo'));
   const [envio] = await api('GET', `/requisicoes?execucao=${c01.id}&fase=envio&entidade=documento&limite=1`);

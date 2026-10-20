@@ -57,6 +57,13 @@ export function validarModelo(m: ModeloEntidade, outros: ModeloEntidade[] = []):
   }
   for (const r of m.relacoes ?? []) {
     if (r.via && !nomesRel.has(r.via)) erros.push(`relação ${r.nome}: "via" aponta para ${r.via}, que não é relação deste modelo.`);
+    if (r.campo || r.chave) {
+      if (!r.campo || !r.chave) { erros.push(`relação ${r.nome}: "campo" e "chave" andam juntos — o campo deste registro e a chave do pai.`); continue; }
+      if (r.via) erros.push(`relação ${r.nome}: relação "via" não tem campo próprio; declare o campo na relação direta.`);
+      if (!(m.campos ?? []).some((c) => c.nome === r.campo)) erros.push(`relação ${r.nome}: o campo ${r.campo} não existe neste modelo.`);
+      const pai = outros.find((o) => o.nome === r.entidade);
+      if (pai && !(pai.campos ?? []).some((c) => c.nome === r.chave)) erros.push(`relação ${r.nome}: a chave ${r.chave} não existe no modelo ${r.entidade}.`);
+    }
   }
   for (const p of m.perfis ?? []) {
     if (!p.nome) erros.push('perfis: cada perfil precisa de nome.');

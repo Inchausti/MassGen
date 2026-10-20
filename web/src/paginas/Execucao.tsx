@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { baixar, del, get, patch, post } from '../api.ts';
 import { Link, useRota } from '../rotas.tsx';
 import {
-  Abas, Cabecalho, CaixaErro, Carregando, Gaveta, Json, Metodo, Painel, SeloExecucao, SeloRegistro, SeloStatusHttp, Vazio, numero, quando, useAcao, useCarregar,
+  Abas, Cabecalho, CaixaErro, Carregando, Gaveta, Json, Metodo, Painel, SeloExecucao, SeloRegistro, SeloStatusHttp, Vazio, numero, quando, useAcao, useAvisos, useCarregar,
 } from '../ui.tsx';
 import { DetalheRequisicao, Monitor } from './Monitor.tsx';
 
@@ -133,6 +133,7 @@ function DetalheRegistro({ id, aoFechar, aoMudar }: { id: string; aoFechar: () =
   const [editando, setEditando] = useState<string | null>(null);
   const [req, setReq] = useState<number | null>(null);
   const acao = useAcao();
+  const avisar = useAvisos();
   const d = r.dados;
   if (req !== null) return <DetalheRequisicao id={req} aoFechar={() => setReq(null)} aoTrocar={setReq} />;
   const salvar = async () => {
@@ -145,7 +146,13 @@ function DetalheRegistro({ id, aoFechar, aoMudar }: { id: string; aoFechar: () =
     <Gaveta titulo={d?.rotulo ?? 'Registro'} sub={d ? `${d.entidade} ${d.indice}${d.perfil ? ` · perfil ${d.perfil}` : ''}${d.caso ? ` · caso ${d.caso}` : ''}` : undefined} aoFechar={aoFechar}
       acoes={d && <>
         {d.status === 'gerado' && editando === null && <button className="botao pequeno" onClick={() => setEditando(JSON.stringify(d.dados, null, 2))}>Editar</button>}
-        <button className="botao pequeno" onClick={async () => { const c = await acao.executar(() => post(`/registros/${id}/salvar-cadastro`, { etiquetas: [] }), 'Salvo como cadastro mestre.'); if (c) aoMudar(); }}>Salvar como cadastro</button>
+        <button className="botao pequeno" onClick={async () => {
+          const c = await acao.executar(() => post(`/registros/${id}/salvar-cadastro`, { etiquetas: [] }));
+          if (c) {
+            avisar(c.paisSalvos?.length ? `Salvo como cadastro mestre, junto com ${c.paisSalvos.map((p: any) => `${p.entidade} ${p.rotulo}`).join(', ')}, que a integração exige.` : 'Salvo como cadastro mestre.');
+            aoMudar();
+          }
+        }}>Salvar como cadastro</button>
       </>}>
       {r.carregando && !d ? <Carregando /> : !d ? <CaixaErro erro={r.erro} /> : (
         <>

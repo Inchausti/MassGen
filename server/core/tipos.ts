@@ -17,6 +17,10 @@ export interface Relacao {
   entidade: string;             // entidade do pai
   modo?: 'aleatorio' | 'um_para_um';
   via?: string;                 // pega o pai através de outra relação: o fornecedor do contrato
+  // Como a integração liga o registro ao pai: o campo deste registro que guarda a chave do pai.
+  // Ex.: contrato.supplier_cnpj = fornecedor.cnpj. Com isso, um cadastro só é salvo ligado a um pai cadastrado.
+  campo?: string;
+  chave?: string;
 }
 
 export interface Assercao {
@@ -101,6 +105,7 @@ export interface CadastroUsado {
   rotulo: string;
   dados: Record<string, unknown>;
   idRemoto?: string;
+  pais?: Record<string, string>;    // relação -> id do cadastro pai
 }
 
 export interface RegistroGerado {

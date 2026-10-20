@@ -135,6 +135,7 @@ export async function gerarMassa(e: EntradaGeracao): Promise<{ registros: Regist
   const geradosPorEntidade = new Map<string, RegistroGerado[]>();
   const porId = new Map<string, RegistroGerado>();
   const todos: RegistroGerado[] = [];
+  const regDoCadastro = new Map<string, string>();
   const execucao = { codigo: e.codigoExecucao, semente: e.semente };
 
   for (const [posicao, nome] of ordem.entries()) {
@@ -145,16 +146,23 @@ export async function gerarMassa(e: EntradaGeracao): Promise<{ registros: Regist
     geradosPorEntidade.set(nome, lista);
     const unicos = new Map<string, Set<string>>();
 
-    // 1. Cadastros mestres escolhidos entram primeiro, como estão.
+    // 1. Cadastros mestres escolhidos entram primeiro, como estão, ligados aos cadastros pai que já entraram
+    //    (o contrato ao seu fornecedor): os pais vêm antes pela ordem das entidades.
     for (const cadId of def.cadastros ?? []) {
       const cad = e.cadastros?.[cadId];
       if (!cad) { avisos.push(`Cadastro ${cadId} não encontrado; ignorado.`); continue; }
+      const paisDoCadastro: Record<string, string> = {};
+      for (const [rel, cadPai] of Object.entries(cad.pais ?? {})) {
+        const regPai = regDoCadastro.get(cadPai);
+        if (regPai) paisDoCadastro[rel] = regPai;
+      }
       const reg: RegistroGerado = {
         id: `${e.codigoExecucao}:${nome}:${lista.length + 1}`,
         entidade: nome, indice: lista.length + 1, ordem: posicao, rotulo: cad.rotulo,
-        cadastroId: cad.id, idRemoto: cad.idRemoto, pais: {}, dados: clonar(cad.dados),
+        cadastroId: cad.id, idRemoto: cad.idRemoto, pais: paisDoCadastro, dados: clonar(cad.dados),
         esperado: modelo.esperado ?? ESPERADO_PADRAO, conferencia: modelo.conferencia, avisos: [],
       };
+      regDoCadastro.set(cad.id, reg.id);
       lista.push(reg);
       porId.set(reg.id, reg);
       todos.push(reg);

@@ -1,7 +1,7 @@
 {
   "id": "splithub",
   "nome": "SplitHub",
-  "versao": "1.0.0",
+  "versao": "1.1.0",
   "descricao": "Fornecedores, contratos e documentos fiscais segundo o docs da API do SplitHub v1.7.0. Comprovantes de guia RAD entram na versão seguinte do pacote.",
   "contrato": "docs da API SplitHub v1.7.0",
   "dominiosProducao": ["api.splithub.com.br"],
@@ -63,7 +63,7 @@
       "rotuloRegistro": "{{ external_contract_id }}",
       "idRemoto": "id",
       "relacoes": [
-        { "nome": "fornecedor", "entidade": "fornecedor", "modo": "um_para_um" }
+        { "nome": "fornecedor", "entidade": "fornecedor", "modo": "um_para_um", "campo": "supplier_cnpj", "chave": "cnpj" }
       ],
       "campos": [
         { "nome": "external_contract_id", "obrigatorio": true, "unico": true, "gerador": { "tipo": "sequencia", "prefixo": "MASSA-{{ $exec.codigo }}-", "digitos": 4 } },
