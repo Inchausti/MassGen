@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { get, post } from '../api.ts';
 import { Link, useRota } from '../rotas.tsx';
 import {
-  Abas, Cabecalho, CaixaErro, Campo, Carregando, Painel, Vazio, relativo, useAcao, useCarregar, ROTULO_AMBIENTE, ROTULO_AUTH,
+  Abas, Cabecalho, CaixaErro, Campo, Carregando, Painel, Vazio, useAcao, useCarregar, ROTULO_AMBIENTE, ROTULO_AUTH, SeloIntegracao, SeloPapel,
 } from '../ui.tsx';
 import { ImportarPostman } from './ImportarPostman.tsx';
 
@@ -11,26 +11,27 @@ export function Destinos() {
   return (
     <div className="pagina">
       <Cabecalho
-        titulo="Destinos"
-        sub="As APIs que recebem a massa. Cada destino tem endereço, credencial no cofre, limites, idempotência e a estrutura de APIs. Só domínios da lista permitida e nunca produção."
-        acoes={<Link para="/destinos/novo" className="botao primario">Novo destino</Link>}
+        titulo="Integrações"
+        sub="As APIs de cada ambiente. No papel de cliente, o app envia a massa para a API do sistema testado; no de ente emulado, faz o papel de um terceiro que o sistema integra. Cada integração tem endereço, credencial no cofre, limites e a estrutura de APIs. Só domínios da lista permitida e nunca produção."
+        acoes={<Link para="/destinos/novo" className="botao primario">Nova integração</Link>}
       />
       <CaixaErro erro={erro} />
       <Painel semPad>
         {carregando && !dados ? <Carregando /> : !dados?.length ? (
-          <Vazio titulo="Nenhum destino cadastrado">Importe a collection do Postman ou preencha à mão. <Link para="/destinos/novo">Cadastrar destino</Link></Vazio>
+          <Vazio titulo="Nenhuma integração cadastrada">Importe a collection do Postman, ligue uma da biblioteca ou preencha à mão. <Link para="/destinos/novo">Cadastrar integração</Link></Vazio>
         ) : (
           <div className="tabela-wrap"><table className="tabela">
-            <thead><tr><th>Destino</th><th>Ambiente</th><th>Autenticação</th><th className="num">Operações</th><th>Credencial</th><th>Último teste</th></tr></thead>
+            <thead><tr><th>Integração</th><th>Ambiente</th><th>Papel</th><th>Situação</th><th>Autenticação</th><th className="num">Operações</th><th>Credencial</th></tr></thead>
             <tbody>
               {dados.map((d: any) => (
                 <tr key={d.id}>
                   <td><Link para={`/destinos/${d.id}`}>{d.nome}</Link>{!d.ativo && <span className="selo" style={{ marginLeft: 8 }}>Inativo</span>}<div className="dica mono quebra">{d.baseUrl}</div></td>
-                  <td>{ROTULO_AMBIENTE[d.tipoAmbiente]}</td>
+                  <td>{d.ambiente ? <Link para={`/ambientes/${d.ambiente.id}`}>{d.ambiente.nome}</Link> : ROTULO_AMBIENTE[d.tipoAmbiente]}</td>
+                  <td><SeloPapel papel={d.papel} ente={d.ente} /></td>
+                  <td><SeloIntegracao status={d.status} /></td>
                   <td>{ROTULO_AUTH[d.autenticacao.tipo] ?? d.autenticacao.tipo}</td>
                   <td className="num">{d.operacoes}</td>
                   <td>{d.segredos.length ? <span className="selo ok">{d.segredos.length} no cofre</span> : d.autenticacao.tipo === 'nenhuma' ? <span className="dica">—</span> : <span className="selo aviso">Falta</span>}</td>
-                  <td>{!d.ultimoTeste ? <span className="dica">Nunca</span> : <span className={`selo ${d.ultimoTeste.ok ? 'ok' : 'erro'}`}>{d.ultimoTeste.ok ? 'Ok' : 'Falhou'} · {relativo(d.ultimoTeste.em)}</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -45,6 +46,7 @@ export function Destinos() {
 
 export interface FormularioDestino {
   nome: string; tipoAmbiente: string; baseUrl: string; pacoteId: string | null;
+  ambienteId: string | null; papel: string; ente: string | null;
   autenticacao: { tipo: string; cabecalho?: string; usuario?: string; tokenUrl?: string; formato?: string; escopo?: string };
   limites: { porMinuto?: number; tentativas?: number; timeoutMs?: number };
   idempotencia: { cabecalho?: string };
@@ -56,7 +58,7 @@ export interface FormularioDestino {
 }
 
 export const DESTINO_VAZIO: FormularioDestino = {
-  nome: '', tipoAmbiente: 'sandbox', baseUrl: '', pacoteId: null, autenticacao: { tipo: 'nenhuma' }, limites: { porMinuto: 600, tentativas: 4, timeoutMs: 30000 },
+  nome: '', tipoAmbiente: 'sandbox', baseUrl: '', pacoteId: null, ambienteId: null, papel: 'cliente', ente: '', autenticacao: { tipo: 'nenhuma' }, limites: { porMinuto: 600, tentativas: 4, timeoutMs: 30000 },
   idempotencia: { cabecalho: '' }, rastreio: { cabecalho: 'X-MassGen-Rastreio' }, cabecalhos: { 'Content-Type': 'application/json' }, variaveis: {}, teste: { metodo: 'GET', rota: '' },
 };
 
@@ -78,8 +80,9 @@ function ChaveValor({ valor, aoMudar, rotuloChave = 'Nome', rotuloValor = 'Valor
   );
 }
 
-export function FormDestino({ valor, aoMudar, pacotes, novo }: { valor: FormularioDestino; aoMudar: (v: FormularioDestino) => void; pacotes: any[]; novo: boolean }) {
+export function FormDestino({ valor, aoMudar, pacotes, ambientes, novo }: { valor: FormularioDestino; aoMudar: (v: FormularioDestino) => void; pacotes: any[]; ambientes: any[]; novo: boolean }) {
   const set = (p: Partial<FormularioDestino>) => aoMudar({ ...valor, ...p });
+  const amb = ambientes.find((x) => x.id === valor.ambienteId);
   const a = valor.autenticacao;
   const escolherPacote = (id: string) => {
     const pac = pacotes.find((p) => p.id === id);
@@ -97,12 +100,27 @@ export function FormDestino({ valor, aoMudar, pacotes, novo }: { valor: Formular
     <div className="pilha" style={{ gap: 18 }}>
       <Painel titulo="Identificação">
         <div className="grade grade-2">
-          <Campo rotulo="Nome"><input type="text" value={valor.nome} onChange={(e) => set({ nome: e.target.value })} placeholder="Sandbox do cliente" /></Campo>
-          <Campo rotulo="Tipo de ambiente" ajuda="Produção não existe como opção.">
+          <Campo rotulo="Nome"><input type="text" value={valor.nome} onChange={(e) => set({ nome: e.target.value })} placeholder="SplitHub API v1" /></Campo>
+          <Campo rotulo="Ambiente" ajuda={amb ? `${ROTULO_AMBIENTE[amb.tipo]}: o tipo vem do ambiente.` : 'Sem escolha, vai para o ambiente do pacote e do tipo.'}>
+            <select value={valor.ambienteId ?? ''} onChange={(e) => {
+              const a = ambientes.find((x) => x.id === e.target.value);
+              set({ ambienteId: e.target.value || null, ...(a ? { tipoAmbiente: a.tipo, ...(novo && a.pacoteId && !valor.pacoteId ? { pacoteId: a.pacoteId } : {}) } : {}) });
+            }}>
+              <option value="">Escolher pelo pacote e pelo tipo</option>
+              {ambientes.map((a) => <option key={a.id} value={a.id}>{a.nome}</option>)}
+            </select>
+          </Campo>
+          {!amb && <Campo rotulo="Tipo de ambiente" ajuda="Produção não existe como opção.">
             <select value={valor.tipoAmbiente} onChange={(e) => set({ tipoAmbiente: e.target.value })}>
               <option value="sandbox">Sandbox</option><option value="homologacao">Homologação</option><option value="desenvolvimento">Desenvolvimento</option>
             </select>
+          </Campo>}
+          <Campo rotulo="Papel" ajuda={valor.papel === 'emulador' ? 'O app faz o papel de um ente que o sistema integra e entrega os eventos dele nas rotas do sistema.' : 'O app chama a API do sistema testado, como um cliente.'}>
+            <select value={valor.papel} onChange={(e) => set({ papel: e.target.value })}>
+              <option value="cliente">Cliente</option><option value="emulador">Ente emulado</option>
+            </select>
           </Campo>
+          {valor.papel === 'emulador' && <Campo rotulo="Ente emulado" ajuda="Quem o app representa, como Receita Federal ou Comitê Gestor do IBS."><input type="text" value={valor.ente ?? ''} onChange={(e) => set({ ente: e.target.value })} placeholder="Receita Federal" /></Campo>}
           <Campo rotulo="Endereço base" ajuda="Precisa estar em ALLOWED_DESTINATION_DOMAINS, no .env."><input type="url" value={valor.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://sandbox.exemplo.com" /></Campo>
           <Campo rotulo="Pacote de domínio" ajuda="Define os modelos, a estrutura padrão e os cenários prontos.">
             <select value={valor.pacoteId ?? ''} onChange={(e) => escolherPacote(e.target.value)}>
@@ -110,7 +128,7 @@ export function FormDestino({ valor, aoMudar, pacotes, novo }: { valor: Formular
               {pacotes.map((p) => <option key={p.id} value={p.id}>{p.nome} {p.versao}</option>)}
             </select>
           </Campo>
-          {!novo && <label className="check"><input type="checkbox" checked={valor.ativo !== false} onChange={(e) => set({ ativo: e.target.checked })} /> Destino ativo (aceita envios)</label>}
+          {!novo && <label className="check"><input type="checkbox" checked={valor.ativo !== false} onChange={(e) => set({ ativo: e.target.checked })} /> Integração ativa (aceita envios)</label>}
         </div>
       </Painel>
       <Painel titulo="Autenticação">
@@ -149,7 +167,7 @@ export function FormDestino({ valor, aoMudar, pacotes, novo }: { valor: Formular
         </div>
       </Painel>
       <div className="lado-a-lado">
-        <Painel titulo="Variáveis do destino"><p className="dica" style={{ marginBottom: 10 }}>Valores que a massa usa, como o CNPJ do comprador. Nos modelos: gerador "variável" ou <code>$var.nome</code>.</p><ChaveValor valor={valor.variaveis} aoMudar={(v) => set({ variaveis: v })} /></Painel>
+        <Painel titulo="Variáveis da integração"><p className="dica" style={{ marginBottom: 10 }}>Valores que a massa usa, como o CNPJ do comprador. Nos modelos: gerador "variável" ou <code>$var.nome</code>.</p><ChaveValor valor={valor.variaveis} aoMudar={(v) => set({ variaveis: v })} /></Painel>
         <Painel titulo="Cabeçalhos fixos"><p className="dica" style={{ marginBottom: 10 }}>Vão em toda chamada. Autenticação e idempotência são acrescentadas pelo app.</p><ChaveValor valor={valor.cabecalhos} aoMudar={(v) => set({ cabecalhos: v })} rotuloChave="Cabeçalho" /></Painel>
       </div>
     </div>
@@ -162,24 +180,30 @@ export function NovoDestino() {
   const { navegar, busca } = useRota();
   const [modo, setModo] = useState<'importar' | 'manual'>(busca.get('modo') === 'manual' ? 'manual' : 'importar');
   const pacotes = useCarregar(() => get('/pacotes'));
-  const [form, setForm] = useState<FormularioDestino>(DESTINO_VAZIO);
+  const ambientes = useCarregar(() => get('/ambientes'));
+  const ambienteInicial = busca.get('ambiente');
+  const [form, setForm] = useState<FormularioDestino>({ ...DESTINO_VAZIO, ambienteId: ambienteInicial });
+  useEffect(() => {
+    const a = (ambientes.dados ?? []).find((x: any) => x.id === form.ambienteId);
+    if (a) setForm((f) => ({ ...f, tipoAmbiente: a.tipo, pacoteId: f.pacoteId ?? a.pacoteId ?? null }));
+  }, [ambientes.dados]); // eslint-disable-line react-hooks/exhaustive-deps
   const acao = useAcao();
   const criar = async () => {
-    const corpo = { ...form, pacoteId: form.pacoteId || null };
-    const d = await acao.executar(() => post('/destinos', corpo), 'Destino criado.');
-    if (d) navegar(`/destinos/${d.id}?aba=segredos`);
+    const corpo = { ...form, pacoteId: form.pacoteId || null, ambienteId: form.ambienteId || undefined, ente: form.papel === 'emulador' ? form.ente : null };
+    const d = await acao.executar(() => post('/destinos', corpo), 'Integração criada.');
+    if (d) navegar(`/destinos/${d.id}?aba=${d.papel === 'emulador' ? 'conexao' : 'segredos'}`);
   };
   return (
     <div className="pagina">
-      <Cabecalho migalha={<Link para="/destinos">Destinos</Link>} titulo="Novo destino" sub="Importe do Postman ou preencha à mão. Os dois caminhos se combinam: dá para ajustar à mão o que veio da importação e importar depois sobre um destino preenchido." />
+      <Cabecalho migalha={<Link para="/destinos">Integrações</Link>} titulo="Nova integração" sub="Importe do Postman ou preencha à mão. Os arquivos importados vão para a biblioteca de APIs. Os dois caminhos se combinam: dá para ajustar à mão o que veio da importação e importar depois sobre uma integração preenchida. Para um ente emulado cujas rotas o sistema ainda não expõe, preencha à mão: a integração fica aguardando rota." />
       <Abas abas={[{ id: 'importar', rotulo: 'Importar do Postman' }, { id: 'manual', rotulo: 'Preencher à mão' }]} ativa={modo} aoMudar={setModo} />
       {modo === 'importar' ? (
-        <ImportarPostman pacotes={pacotes.dados ?? []} aoConcluir={(id) => navegar(`/destinos/${id}?aba=estrutura`)} />
+        <ImportarPostman pacotes={pacotes.dados ?? []} ambientes={ambientes.dados ?? []} ambienteInicial={ambienteInicial} aoConcluir={(id) => navegar(`/destinos/${id}?aba=estrutura`)} />
       ) : (
         <>
           <CaixaErro erro={acao.erro} />
-          <FormDestino valor={form} aoMudar={setForm} pacotes={pacotes.dados ?? []} novo />
-          <div className="acoes"><button className="botao primario" disabled={acao.ocupado || !form.nome || !form.baseUrl} onClick={criar}>Criar destino</button><Link para="/destinos" className="botao">Cancelar</Link></div>
+          <FormDestino valor={form} aoMudar={setForm} pacotes={pacotes.dados ?? []} ambientes={ambientes.dados ?? []} novo />
+          <div className="acoes"><button className="botao primario" disabled={acao.ocupado || !form.nome || !form.baseUrl || (form.papel === 'emulador' && !form.ente)} onClick={criar}>Criar integração</button><Link para="/destinos" className="botao">Cancelar</Link></div>
         </>
       )}
     </div>

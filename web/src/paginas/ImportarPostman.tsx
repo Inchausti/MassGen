@@ -5,13 +5,20 @@ import { CaixaErro, Campo, Metodo, Painel, useAcao, ROTULO_AUTH } from '../ui.ts
 const SITUACAO: Record<string, [string, string]> = { nova: ['Nova', 'ok'], alterada: ['Alterada', 'aviso'], mantida: ['Mantida', ''], token: ['Token', 'info'] };
 
 // Importa collection + environment do Postman: prévia (nada é salvo) e depois aplicação.
-export function ImportarPostman({ destinoId, pacotes, aoConcluir }: { destinoId?: string; pacotes: any[]; aoConcluir: (destinoId: string) => void }) {
+// Ao aplicar, os dois arquivos também vão para a biblioteca de APIs, com versão, e a integração fica ligada a elas.
+export function ImportarPostman({ destinoId, pacotes, ambientes = [], ambienteInicial, aoConcluir }: {
+  destinoId?: string; pacotes: any[]; ambientes?: any[]; ambienteInicial?: string | null; aoConcluir: (destinoId: string) => void;
+}) {
   const [colecao, setColecao] = useState<{ nome: string; json: unknown } | null>(null);
   const [ambiente, setAmbiente] = useState<{ nome: string; json: unknown } | null>(null);
   const [pacoteId, setPacoteId] = useState<string>(pacotes[0]?.id ?? '');
   const [nome, setNome] = useState('');
   const [tipoAmbiente, setTipoAmbiente] = useState('sandbox');
   const [baseUrl, setBaseUrl] = useState('');
+  const [ambienteId, setAmbienteId] = useState<string>(ambienteInicial ?? '');
+  const [papel, setPapel] = useState('cliente');
+  const [ente, setEnte] = useState('');
+  const amb = ambientes.find((a) => a.id === ambienteId);
   const [previa, setPrevia] = useState<any>(null);
   const [resultado, setResultado] = useState<any>(null);
   const acao = useAcao();
@@ -30,7 +37,11 @@ export function ImportarPostman({ destinoId, pacotes, aoConcluir }: { destinoId?
 
   const aplicar = async () => {
     const r = await acao.executar(
-      () => post('/importacao/postman/aplicar', { colecao: colecao?.json, ambiente: ambiente?.json, destinoId, pacoteId: destinoId ? undefined : pacoteId || undefined, nome, tipoAmbiente, baseUrl: baseUrl || undefined }),
+      () => post('/importacao/postman/aplicar', {
+        colecao: colecao?.json, ambiente: ambiente?.json, destinoId, pacoteId: destinoId ? undefined : pacoteId || undefined, nome, tipoAmbiente: amb?.tipo ?? tipoAmbiente,
+        baseUrl: baseUrl || undefined, nomeColecao: colecao?.nome, nomeAmbiente: ambiente?.nome,
+        ...(destinoId ? {} : { ambienteId: ambienteId || undefined, papel, ente: papel === 'emulador' ? ente : undefined }),
+      }),
       'Importação aplicada.',
     );
     if (r) setResultado(r);
@@ -41,9 +52,10 @@ export function ImportarPostman({ destinoId, pacotes, aoConcluir }: { destinoId?
       <Painel titulo="Importação aplicada">
         <div className="pilha">
           <p>{resultado.resumo.operacoes} operações importadas, {resultado.resumo.ligadas} ligadas a entidades{resultado.resumo.doPacote ? `, ${resultado.resumo.doPacote} completadas pelo pacote` : ''}. {resultado.resumo.segredos} segredo(s) foram para o cofre.</p>
+          {resultado.biblioteca && <p className="dica">Na biblioteca de APIs: collection v{resultado.biblioteca.colecao.numero}{resultado.biblioteca.colecao.nova ? ' (nova)' : ' (sem mudança)'}{resultado.biblioteca.environment ? ` · environment v${resultado.biblioteca.environment.numero}${resultado.biblioteca.environment.nova ? ' (nova)' : ' (sem mudança)'}` : ''}.</p>}
           {resultado.resumo.segredosVazios.length > 0 && <div className="alerta aviso"><div>O environment trouxe vazios: <strong>{resultado.resumo.segredosVazios.join(', ')}</strong>. Preencha na aba Segredos do destino.</div></div>}
           <Divergencias lista={resultado.divergencias} />
-          <div><button className="botao primario" onClick={() => aoConcluir(resultado.destinoId)}>Abrir o destino</button></div>
+          <div><button className="botao primario" onClick={() => aoConcluir(resultado.destinoId)}>Abrir a integração</button></div>
         </div>
       </Painel>
     );
@@ -58,7 +70,7 @@ export function ImportarPostman({ destinoId, pacotes, aoConcluir }: { destinoId?
           <Campo rotulo="Collection (obrigatória)" ajuda={colecao ? `Lido: ${colecao.nome}` : 'Exportada do Postman no formato v2.1.'}>
             <input type="file" accept=".json,application/json" onChange={(e) => ler(e.target.files?.[0], setColecao)} />
           </Campo>
-          <Campo rotulo="Environment (opcional)" ajuda={ambiente ? `Lido: ${ambiente.nome}` : 'Traz o endereço base, as variáveis e as credenciais. O arquivo não é guardado.'}>
+          <Campo rotulo="Environment (opcional)" ajuda={ambiente ? `Lido: ${ambiente.nome}` : 'Traz o endereço base, as variáveis e as credenciais. É guardado na biblioteca sem os valores secretos, que vão para o cofre.'}>
             <input type="file" accept=".json,application/json" onChange={(e) => ler(e.target.files?.[0], setAmbiente)} />
           </Campo>
           {!destinoId && <Campo rotulo="Pacote de domínio" ajuda="As requisições são ligadas às entidades do pacote.">
@@ -109,15 +121,25 @@ export function ImportarPostman({ destinoId, pacotes, aoConcluir }: { destinoId?
               <ul>{previa.semRequisicao.map((s: any) => <li key={`${s.entidade}.${s.acao}`}><span className="mono">{s.entidade}.{s.acao}</span> · {s.rota}</li>)}</ul></div></div>
           )}
           {!destinoId && (
-            <Painel titulo="Destino">
+            <Painel titulo="Integração">
               <div className="grade grade-3">
                 <Campo rotulo="Nome"><input type="text" value={nome} onChange={(e) => setNome(e.target.value)} /></Campo>
-                <Campo rotulo="Tipo de ambiente"><select value={tipoAmbiente} onChange={(e) => setTipoAmbiente(e.target.value)}><option value="sandbox">Sandbox</option><option value="homologacao">Homologação</option><option value="desenvolvimento">Desenvolvimento</option></select></Campo>
+                <Campo rotulo="Ambiente" ajuda={amb ? 'O tipo vem do ambiente.' : 'Sem escolha, vai para o ambiente do pacote e do tipo.'}>
+                  <select value={ambienteId} onChange={(e) => setAmbienteId(e.target.value)}>
+                    <option value="">Escolher pelo pacote e pelo tipo</option>
+                    {ambientes.map((a) => <option key={a.id} value={a.id}>{a.nome}</option>)}
+                  </select>
+                </Campo>
+                {!amb && <Campo rotulo="Tipo de ambiente"><select value={tipoAmbiente} onChange={(e) => setTipoAmbiente(e.target.value)}><option value="sandbox">Sandbox</option><option value="homologacao">Homologação</option><option value="desenvolvimento">Desenvolvimento</option></select></Campo>}
+                <Campo rotulo="Papel">
+                  <select value={papel} onChange={(e) => setPapel(e.target.value)}><option value="cliente">Cliente</option><option value="emulador">Ente emulado</option></select>
+                </Campo>
+                {papel === 'emulador' && <Campo rotulo="Ente emulado"><input type="text" value={ente} onChange={(e) => setEnte(e.target.value)} placeholder="Receita Federal" /></Campo>}
                 <Campo rotulo="Endereço base" ajuda="Deixe vazio para usar o do environment."><input type="url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={l.baseUrl ?? 'https://…'} /></Campo>
               </div>
             </Painel>
           )}
-          <div className="acoes"><button className="botao primario" disabled={acao.ocupado} onClick={aplicar}>{destinoId ? 'Aplicar sobre este destino' : 'Criar destino com esta importação'}</button></div>
+          <div className="acoes"><button className="botao primario" disabled={acao.ocupado || (!destinoId && papel === 'emulador' && !ente.trim())} onClick={aplicar}>{destinoId ? 'Aplicar sobre esta integração' : 'Criar integração com esta importação'}</button></div>
         </>
       )}
     </div>

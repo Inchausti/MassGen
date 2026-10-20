@@ -42,6 +42,14 @@ const NOMES_EXECUCAO = /^(access_token|token|token_expires_at|refresh_token|id_t
 
 type Qualquer = any;
 
+// Como o app trata uma variável de environment. A mesma regra vale para a importação e para a biblioteca de APIs.
+export function classificarVariavel(chave: string, tipo?: string): 'base' | 'execucao' | 'segredo' | 'comum' {
+  if (NOMES_BASE.test(chave)) return 'base';
+  if (NOMES_EXECUCAO.test(chave)) return 'execucao';
+  if (tipo === 'secret' || NOMES_SEGREDO.test(chave)) return 'segredo';
+  return 'comum';
+}
+
 function scriptsDe(item: Qualquer): string[] {
   return (item?.event ?? []).map((e: Qualquer) => (Array.isArray(e?.script?.exec) ? e.script.exec.join('\n') : String(e?.script?.exec ?? '')));
 }
@@ -119,7 +127,7 @@ export function lerPostman(colecao: Qualquer, ambiente?: Qualquer): ResultadoLei
     if (setPorScript.has(b.chave) || !b.valor) { descartadas.push(b.chave); continue; }
     variaveis[b.chave] = b.valor;
   }
-  if (Object.keys(segredos).length) avisos.push(`O environment trouxe ${Object.keys(segredos).length} segredo(s) preenchido(s): vão para o cofre do destino, e o arquivo não é guardado.`);
+  if (Object.keys(segredos).length) avisos.push(`O environment trouxe ${Object.keys(segredos).length} segredo(s) preenchido(s): vão para o cofre, e o environment guardado na biblioteca fica sem os valores.`);
 
   let tokenUrl = tokenNoScript;
   const operacoes: OperacaoImportada[] = [];

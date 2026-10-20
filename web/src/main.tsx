@@ -8,6 +8,8 @@ import { ContextoSessao, ROTULO_PAPEL, useSessao, type UsuarioSessao } from './s
 import { AceitarConvite, Entrar, SemAcesso } from './paginas/Entrar.tsx';
 import { Painel } from './paginas/Painel.tsx';
 import { Destinos, NovoDestino } from './paginas/Destinos.tsx';
+import { Ambientes, AmbienteDetalhe } from './paginas/Ambientes.tsx';
+import { Biblioteca, BibliotecaDetalhe } from './paginas/Biblioteca.tsx';
 import { DestinoDetalhe } from './paginas/Destino.tsx';
 import { Modelos, ModeloEditor } from './paginas/Modelos.tsx';
 import { Pacotes } from './paginas/Pacotes.tsx';
@@ -23,6 +25,8 @@ const I = (d: string) => (
 );
 const ICONES = {
   painel: I('M3 13h8V3H3zM13 21h8v-8h-8zM13 3v6h8V3zM3 21h8v-4H3z'),
+  ambientes: I('M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6'),
+  biblioteca: I('M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z'),
   destinos: I('M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z'),
   modelos: I('M4 6h16M4 12h10M4 18h7M17 15l3 3-3 3'),
   pacotes: I('M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8M12 13v8'),
@@ -35,7 +39,9 @@ const ICONES = {
 
 const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string; soRoot?: boolean }[] = [
   { para: '/', rotulo: 'Painel', icone: ICONES.painel, grupo: '' },
-  { para: '/destinos', rotulo: 'Destinos', icone: ICONES.destinos, grupo: 'Configurar' },
+  { para: '/ambientes', rotulo: 'Ambientes', icone: ICONES.ambientes, grupo: 'Configurar' },
+  { para: '/destinos', rotulo: 'Integrações', icone: ICONES.destinos, grupo: 'Configurar' },
+  { para: '/biblioteca', rotulo: 'Biblioteca de APIs', icone: ICONES.biblioteca, grupo: 'Configurar' },
   { para: '/pacotes', rotulo: 'Pacotes', icone: ICONES.pacotes, grupo: 'Configurar' },
   { para: '/modelos', rotulo: 'Modelos', icone: ICONES.modelos, grupo: 'Configurar' },
   { para: '/cadastros', rotulo: 'Cadastros', icone: ICONES.cadastros, grupo: 'Configurar' },
@@ -47,6 +53,10 @@ const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string; soRo
 
 const PAGINAS: { padrao: string; render: (p: Record<string, string>) => ReactNode; soRoot?: boolean }[] = [
   { padrao: '/', render: () => <Painel /> },
+  { padrao: '/ambientes', render: () => <Ambientes /> },
+  { padrao: '/ambientes/:id', render: (p) => <AmbienteDetalhe id={p.id} /> },
+  { padrao: '/biblioteca', render: () => <Biblioteca /> },
+  { padrao: '/biblioteca/:id', render: (p) => <BibliotecaDetalhe id={p.id} /> },
   { padrao: '/destinos', render: () => <Destinos /> },
   { padrao: '/destinos/novo', render: () => <NovoDestino /> },
   { padrao: '/destinos/:id', render: (p) => <DestinoDetalhe id={p.id} /> },

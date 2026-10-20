@@ -248,6 +248,139 @@ test('importação do Postman: liga as requisições às entidades, guarda segre
   assert.ok(t.ok, JSON.stringify(t));
 });
 
+// ---------------------------------------------------------------- v3.0, etapa 1: ambientes, biblioteca e papel
+
+const ENV_LOCAL = () => ({
+  name: 'local', values: [
+    { key: 'base_url', value: `http://localhost:${PORTA_MOCK}`, enabled: true },
+    { key: 'client_id', value: 'massgen', enabled: true },
+    { key: 'client_secret', value: 'massgen-segredo', type: 'secret', enabled: true },
+    { key: 'buyer_cnpj', value: '11222333000181', enabled: true },
+    { key: 'buyer_name', value: 'Comprador Exemplo S.A.', enabled: true },
+    { key: 'buyer_state', value: 'SP', enabled: true },
+    { key: 'access_token', value: '', type: 'secret', enabled: true },
+    { key: 'supplier_id', value: '', enabled: true },
+  ],
+});
+
+function requisicoesDa(itens: any[], saida: any[] = []): any[] {
+  for (const it of itens) { if (Array.isArray(it.item)) requisicoesDa(it.item, saida); else saida.push(it); }
+  return saida;
+}
+
+test('ambientes: o destino da v2.0 ganha um ambiente e a integração herda o tipo dele', async () => {
+  const d = await api('GET', `/destinos/${destinoId}`);
+  assert.ok(d.ambiente, 'toda integração pertence a um ambiente');
+  assert.equal(d.papel, 'cliente');
+  assert.equal(d.status, 'pronta');
+  const amb = await api('GET', `/ambientes/${d.ambiente.id}`);
+  assert.equal(amb.nome, 'SplitHub — Desenvolvimento');
+  assert.equal(amb.tipo, 'desenvolvimento');
+  assert.ok(amb.integracoes.some((i: any) => i.id === destinoId));
+  await assert.rejects(api('DELETE', `/ambientes/${amb.id}`), /integração/);
+  await assert.rejects(api('POST', '/ambientes', { nome: amb.nome.toUpperCase(), tipo: 'sandbox' }), /Já existe/);
+  await assert.rejects(api('POST', '/ambientes', { nome: 'Produção', tipo: 'producao' }), /Produção não é aceita/);
+});
+
+test('biblioteca: guarda collection e environment originais, sem segredos, com versão e comparação', async () => {
+  const lista = await api('GET', '/biblioteca');
+  const col = lista.find((x: any) => x.tipo === 'collection' && x.nome === 'SplitHub API v1 (cliente ERP)');
+  const env = lista.find((x: any) => x.tipo === 'environment' && x.nome === 'local');
+  assert.ok(col && env, 'a importação do Postman guardou os dois arquivos na biblioteca');
+  assert.equal(col.ultima.numero, 1);
+  assert.ok(col.integracoes.length >= 1);
+  const det = await api('GET', `/biblioteca/${env.id}`);
+  const v1 = det.versoes[0];
+  assert.deepEqual(v1.resumo.segredos, ['client_id', 'client_secret']);
+  assert.equal(v1.resumo.baseUrl, `http://localhost:${PORTA_MOCK}`);
+  const baixado = await api('GET', `/biblioteca/versoes/${v1.id}/arquivo`);
+  assert.ok(!JSON.stringify(baixado).includes('massgen-segredo'), 'o environment guardado não tem o valor do segredo');
+  assert.equal(baixado.values.find((v: any) => v.key === 'client_secret').value, '');
+  assert.ok(!JSON.stringify(det).includes('massgen-segredo'));
+
+  const mesmo = await api('POST', '/biblioteca', { conteudo: ENV_LOCAL(), nomeArquivo: 'local.postman_environment.json' });
+  assert.equal(mesmo.nova, false, 'arquivo igual não vira versão nova');
+  assert.equal(mesmo.versao.numero, 1);
+  const outroNome = ENV_LOCAL();
+  outroNome.values.find((v) => v.key === 'buyer_name')!.value = 'Comprador Dois S.A.';
+  const v2 = await api('POST', '/biblioteca', { conteudo: outroNome });
+  assert.equal(v2.nova, true);
+  assert.equal(v2.versao.numero, 2);
+  const outroSegredo = structuredClone(outroNome);
+  outroSegredo.values.find((v) => v.key === 'client_secret')!.value = 'segredo-trocado';
+  const v3 = await api('POST', '/biblioteca', { conteudo: outroSegredo });
+  assert.equal(v3.versao.numero, 3, 'segredo trocado também vira versão, sem aparecer no arquivo');
+  const cmpEnv = await api('GET', `/biblioteca/comparar?de=${v1.id}&para=${v3.versao.id}`);
+  assert.deepEqual(cmpEnv.alteradas.map((a: any) => `${a.chave}:${a.segredo}`).sort(), ['buyer_name:false', 'client_secret:true']);
+  assert.ok(!JSON.stringify(cmpEnv).includes('segredo-trocado') && !JSON.stringify(cmpEnv).includes('massgen-segredo'));
+
+  const colecao = JSON.parse(readFileSync(path.join(RAIZ, 'tests', 'fixtures', 'splithub-collection.json'), 'utf8'));
+  const col2 = structuredClone(colecao);
+  const pastaDocs = col2.item.find((p: any) => p.name.startsWith('03'));
+  pastaDocs.item = pastaDocs.item.filter((r: any) => r.name !== '03.15 Consultar documento removido');
+  const reqs = requisicoesDa(col2.item);
+  const listar = reqs.find((r: any) => r.name === '01.2 Listar fornecedores');
+  listar.request.url.raw = `${listar.request.url.raw}${listar.request.url.raw.includes('?') ? '&' : '?'}status=active`;
+  const consultar = reqs.find((r: any) => r.name === '01.3 Consultar fornecedor');
+  const nova = structuredClone(consultar);
+  nova.name = '01.8 Histórico do fornecedor';
+  nova.request.url.raw = '{{base_url}}/v1/suppliers/{{supplier_id}}/history';
+  col2.item.find((p: any) => p.name.startsWith('01')).item.push(nova);
+  const c2 = await api('POST', '/biblioteca', { conteudo: col2, nomeArquivo: 'splithub-v2.postman_collection.json' });
+  assert.equal(c2.versao.numero, 2);
+  const colDet = await api('GET', `/biblioteca/${col.id}`);
+  const diff = await api('GET', `/biblioteca/comparar?de=${colDet.versoes.at(-1).id}&para=${c2.versao.id}`);
+  assert.deepEqual(diff.novas.map((x: any) => x.nome), ['01.8 Histórico do fornecedor']);
+  assert.deepEqual(diff.removidas.map((x: any) => x.nome), ['03.15 Consultar documento removido']);
+  assert.deepEqual(diff.alteradas.map((x: any) => `${x.nome}:${x.mudou.join('+')}`), ['01.2 Listar fornecedores:rota']);
+  await assert.rejects(api('POST', '/biblioteca', { conteudo: { qualquer: 1 } }), /nem um environment/);
+});
+
+test('integração pela biblioteca: cliente herda o ambiente; ente emulado aguarda rota e não recebe cenário', async () => {
+  const amb = await api('POST', '/ambientes', { nome: 'SplitHub — Sandbox do teste', tipo: 'sandbox', pacoteId: 'splithub', sistema: 'SplitHub' });
+  const lista = await api('GET', '/biblioteca');
+  const col = await api('GET', `/biblioteca/${lista.find((x: any) => x.tipo === 'collection').id}`);
+  const env = await api('GET', `/biblioteca/${lista.find((x: any) => x.tipo === 'environment' && x.nome === 'local').id}`);
+  const colV1 = col.versoes.find((v: any) => v.numero === 1).id;
+  const colV2 = col.versoes.find((v: any) => v.numero === 2).id;
+  const envV1 = env.versoes.find((v: any) => v.numero === 1).id;
+
+  const cli = await api('POST', `/ambientes/${amb.id}/integracoes`, { nome: 'SplitHub API v1', papel: 'cliente', colecaoVersaoId: colV1, environmentVersaoId: envV1 });
+  assert.equal(cli.destino.ambiente.id, amb.id);
+  assert.equal(cli.destino.tipoAmbiente, 'sandbox');
+  assert.equal(cli.destino.pacoteId, 'splithub', 'sem pacote informado, vale o do ambiente');
+  assert.deepEqual(cli.destino.segredosFaltando, [], 'os segredos do environment vão do cofre da biblioteca para o da integração');
+  assert.equal(cli.destino.colecao.numero, 1);
+  assert.equal(cli.destino.colecao.desatualizada, true, 'a collection já tem a versão 2');
+  assert.equal(cli.destino.environment.numero, 1);
+
+  await assert.rejects(api('POST', '/destinos', { nome: 'Sem ente', papel: 'emulador', ambienteId: amb.id, baseUrl: `http://localhost:${PORTA_MOCK}` }), /qual ente/);
+  const emu = await api('POST', '/destinos', { nome: 'CBS — apuração assistida', papel: 'emulador', ente: 'Receita Federal', ambienteId: amb.id, baseUrl: `http://localhost:${PORTA_MOCK}` });
+  const emuDet = await api('GET', `/destinos/${emu.id}`);
+  assert.equal(emuDet.status, 'aguardando_rota');
+  assert.equal(emuDet.ente, 'Receita Federal');
+  assert.equal((await api('GET', `/destinos/${emu.id}/operacoes`)).length, 0, 'ente emulado não recebe as operações de cliente do pacote');
+  const cen = await api('POST', '/cenarios/do-pacote', { pacoteId: 'splithub', cenarioId: 'c01', destinoId: emu.id });
+  await assert.rejects(api('POST', `/cenarios/${cen.id}/gerar`, { semente: 1 }), /ente emulado/);
+
+  const tv = await api('PUT', `/destinos/${cli.destinoId}/versoes`, { colecaoVersaoId: colV2 });
+  assert.equal(tv.destino.colecao.numero, 2);
+  assert.equal(tv.destino.colecao.desatualizada, false);
+  const ops = await api('GET', `/destinos/${cli.destinoId}/operacoes`);
+  assert.ok(ops.some((o: any) => o.nome === '01.8 Histórico do fornecedor'));
+  assert.ok(!ops.some((o: any) => o.nome === '03.15 Consultar documento removido'));
+  const colDepois = await api('GET', `/biblioteca/${col.id}`);
+  assert.ok(colDepois.versoes.find((v: any) => v.numero === 2).integracoes.some((i: any) => i.id === cli.destinoId));
+  await assert.rejects(api('DELETE', `/biblioteca/${col.id}`), /integrações usando/);
+
+  const ambDet = await api('GET', `/ambientes/${amb.id}`);
+  assert.deepEqual(ambDet.integracoes.map((i: any) => `${i.nome}:${i.papel}`).sort(), ['CBS — apuração assistida:emulador', 'SplitHub API v1:cliente']);
+  const painel = await api('GET', '/painel');
+  assert.ok(painel.ambientes.some((a: any) => a.id === amb.id));
+  const trilha = await api('GET', '/auditoria?acao=biblioteca.importar&limite=20');
+  assert.ok(trilha.itens?.length ?? trilha.length, 'a importação para a biblioteca entra na trilha');
+});
+
 test('rastreabilidade: o e-mail de quem entrou na trilha, código de rastreio por chamada e pacote de evidências', async () => {
   const execs = await api('GET', '/execucoes');
   const c01 = execs.find((e: any) => e.cenarioNome.startsWith('C-01'));

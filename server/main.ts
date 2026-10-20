@@ -10,6 +10,7 @@ import { garantirPacotesEmbutidos } from './servicos/pacotes.ts';
 import { marcarInterrompidas } from './servicos/execucoes.ts';
 import { auditar } from './auditoria.ts';
 import { existeRoot, garantirRoots } from './usuarios.ts';
+import { garantirAmbientes } from './servicos/ambientes.ts';
 
 const TIPOS: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -17,6 +18,8 @@ const TIPOS: Record<string, string> = {
 };
 
 garantirPacotesEmbutidos();
+const migrados = garantirAmbientes();
+if (migrados) auditar('ambiente.migrar', `${migrados} destino(s) da v2.0 levado(s) para o ambiente do seu pacote e do seu tipo`, { detalhes: { destinos: migrados } });
 marcarInterrompidas();
 auditar('app.iniciar', `MassGen iniciado na porta ${config.porta}`, {
   detalhes: { dominiosPermitidos: config.dominiosPermitidos, host: config.host ?? 'todas as interfaces', confiarCloudflareAccess: config.confiarCloudflareAccess },

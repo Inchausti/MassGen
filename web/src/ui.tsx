@@ -1,6 +1,7 @@
 // Componentes de interface compartilhados.
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ErroApi } from './api.ts';
+import { Link } from './rotas.tsx';
 
 // ---------------------------------------------------------------- dados
 
@@ -266,6 +267,39 @@ export const ROTULO_AMBIENTE: Record<string, string> = { sandbox: 'Sandbox', hom
 export const ROTULO_AUTH: Record<string, string> = {
   nenhuma: 'Sem autenticação', chave_api: 'Chave de API', basic: 'Basic', bearer: 'Bearer fixo', oauth2_cc: 'OAuth 2.0 (client credentials)',
 };
+
+// ---------------------------------------------------------------- integrações (v3.0)
+
+export const ROTULO_PAPEL_INTEGRACAO: Record<string, string> = { cliente: 'Cliente', emulador: 'Ente emulado' };
+
+const STATUS_INTEGRACAO: Record<string, [string, string, string]> = {
+  pronta: ['Pronta', 'ok', 'O último teste de conexão passou.'],
+  sem_teste: ['Sem teste', 'info', 'Ainda não houve teste de conexão.'],
+  falha: ['Com falha', 'erro', 'O último teste de conexão falhou.'],
+  aguardando_rota: ['Aguardando rota', 'aviso', 'O sistema testado ainda não expõe as rotas para receber os eventos deste ente.'],
+  inativa: ['Inativa', '', 'Não aceita envios.'],
+};
+
+export function SeloIntegracao({ status }: { status: string }) {
+  const [t, c, d] = STATUS_INTEGRACAO[status] ?? [status, '', ''];
+  return <span className={`selo ${c}`} title={d}>{t}</span>;
+}
+
+export function SeloPapel({ papel, ente }: { papel: string; ente?: string | null }) {
+  if (papel !== 'emulador') return <span className="selo sem-ponto">Cliente</span>;
+  return <span className="selo sem-ponto destaque" title="O app faz o papel deste ente e entrega os eventos dele nas rotas do sistema testado">Ente emulado{ente ? ` · ${ente}` : ''}</span>;
+}
+
+// Versão da biblioteca usada pela integração, com aviso quando há uma mais nova.
+export function VersaoBiblioteca({ v }: { v: { arquivoId: string; nome: string; numero: number; ultima: number; desatualizada: boolean } | null }) {
+  if (!v) return <span className="dica">—</span>;
+  return (
+    <span>
+      <Link para={`/biblioteca/${v.arquivoId}`}>{v.nome}</Link> <span className="mono">v{v.numero}</span>
+      {v.desatualizada && <span className="selo aviso sem-ponto" style={{ marginLeft: 6 }} title="Há uma versão mais nova na biblioteca">v{v.ultima} disponível</span>}
+    </span>
+  );
+}
 
 export function copiar(texto: string, avisar: (t: string) => void, rotulo = 'Copiado.'): void {
   navigator.clipboard?.writeText(texto).then(() => avisar(rotulo), () => avisar('Não foi possível copiar.'));

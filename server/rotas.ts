@@ -10,10 +10,14 @@ import {
 import { catalogoGeradores } from './core/geradores.ts';
 import { exportarPacote, instalarPacote, listarPacotes, removerPacote } from './servicos/pacotes.ts';
 import {
-  ACOES, SEGREDOS_POR_AUTH, aplicarImportacao, aplicarOperacoesDoPacote, atualizarDestino, atualizarOperacao, criarDestino, criarOperacao,
-  definirSegredo, detalharDestino, divergencias, historicoImportacoes, listarDestinos, listarOperacoes, obterDestino, previaImportacao,
-  removerDestino, removerOperacao,
+  ACOES, PAPEIS, SEGREDOS_POR_AUTH, aplicarImportacao, aplicarOperacoesDoPacote, atualizarDestino, atualizarOperacao, criarDestino, criarOperacao,
+  definirSegredo, detalharDestino, divergencias, historicoImportacoes, integracaoDaBiblioteca, ligarVersoes, listarDestinos, listarOperacoes,
+  obterDestino, previaImportacao, removerDestino, removerOperacao, trocarVersoes,
 } from './servicos/destinos.ts';
+import { atualizarAmbiente, criarAmbiente, detalharAmbiente, listarAmbientes, obterAmbiente, removerAmbiente, TIPOS_AMBIENTE } from './servicos/ambientes.ts';
+import {
+  arquivoDaVersao, compararVersoes, detalharArquivo, importarArquivo, listarBiblioteca, obterVersao, removerArquivo, type TipoArquivo,
+} from './servicos/biblioteca.ts';
 import { criarModelo, exemplo, listarModelos, obterModelo, removerModelo, restaurarModelo, salvarModelo } from './servicos/modelos.ts';
 import { atualizarCadastro, criarCadastro, desvincular, etiquetasEmUso, listarCadastros, obterCadastro, removerCadastro } from './servicos/cadastros.ts';
 import { atualizarCenario, cenarioDoPacote, criarCenario, listarCenarios, obterCenario, removerCenario } from './servicos/cenarios.ts';
@@ -46,6 +50,7 @@ const exe = (id: string) => obterExecucaoLinha(id).codigo as string;
 rotas.get('/api/saude', () => ({ ok: true }), { publico: true });
 rotas.get('/api/config', ({ quem }) => ({
   dominiosPermitidos: config.dominiosPermitidos, dominiosBloqueados: config.dominiosBloqueados, acoes: ACOES, segredosPorAutenticacao: SEGREDOS_POR_AUTH,
+  papeis: PAPEIS, tiposAmbiente: TIPOS_AMBIENTE,
   usuario: eu(quem!),
 }));
 
@@ -82,7 +87,9 @@ rotas.patch('/api/usuarios/:id', ({ params, corpo, quem }) => alterarUsuario(que
 rotas.post('/api/usuarios/:id/link', ({ params, quem }) => gerarLink(quem!, params.id), SO_ROOT);
 rotas.get('/api/catalogo/geradores', () => catalogoGeradores());
 rotas.get('/api/painel', () => ({
-  destinos: listarDestinos().map((d) => ({ id: d.id, nome: d.nome, tipoAmbiente: d.tipoAmbiente, baseUrl: d.baseUrl, ultimoTeste: d.ultimoTeste, ativo: d.ativo })),
+  ambientes: listarAmbientes().map((a) => ({ id: a.id, nome: a.nome, tipo: a.tipo, integracoes: a.integracoes })),
+  biblioteca: um<{ n: number }>('SELECT COUNT(*) AS n FROM api_arquivos')!.n,
+  destinos: listarDestinos().map((d) => ({ id: d.id, nome: d.nome, tipoAmbiente: d.tipoAmbiente, baseUrl: d.baseUrl, ultimoTeste: d.ultimoTeste, ativo: d.ativo, papel: d.papel, status: d.status, ambiente: d.ambiente })),
   pacotes: listarPacotes().map((p) => ({ id: p.id, nome: p.nome, versao: p.versao, modelos: p.modelos.length })),
   cenarios: um<{ n: number }>('SELECT COUNT(*) AS n FROM cenarios')!.n,
   cadastros: um<{ n: number }>('SELECT COUNT(*) AS n FROM cadastros')!.n,
@@ -144,11 +151,21 @@ rotas.post('/api/modelos/:id/restaurar', ({ params }) => {
 rotas.post('/api/modelos/:id/exemplo', ({ params, corpo }) => exemplo(params.id, { definicao: corpo?.definicao, destinoId: corpo?.destinoId, semente: corpo?.semente }), { leitorPode: true });
 
 // ---------------------------------------------------------------- destinos e estrutura de APIs
-rotas.get('/api/destinos', () => listarDestinos());
+rotas.get('/api/destinos', ({ query }) => listarDestinos({ ambienteId: txt(query.get('ambiente')) }));
 rotas.post('/api/destinos', ({ corpo }) => {
   const d = criarDestino(corpo ?? {});
-  auditar('destino.criar', `Destino ${d.nome} criado (${d.tipoAmbiente}, ${d.baseUrl})`, { alvoTipo: 'destino', alvoId: d.id, detalhes: { baseUrl: d.baseUrl, autenticacao: d.autenticacao.tipo, pacote: d.pacoteId } });
+  auditar('destino.criar', `Integração ${d.nome} criada (${d.papel}, ${d.baseUrl})`, { alvoTipo: 'destino', alvoId: d.id, detalhes: { baseUrl: d.baseUrl, autenticacao: d.autenticacao.tipo, pacote: d.pacoteId, ambiente: d.ambienteId, papel: d.papel, ente: d.ente } });
   return criado(d);
+});
+rotas.put('/api/destinos/:id/versoes', ({ params, corpo }) => {
+  const antes = obterDestino(params.id);
+  const r = trocarVersoes(params.id, { colecaoVersaoId: txt(corpo?.colecaoVersaoId), environmentVersaoId: corpo?.environmentVersaoId === null ? null : txt(corpo?.environmentVersaoId) });
+  const depois = obterDestino(params.id);
+  auditar('destino.versoes', `Integração ${depois.nome} passou para outras versões da biblioteca`, {
+    alvoTipo: 'destino', alvoId: params.id,
+    detalhes: { colecao: { de: antes.colecaoVersaoId, para: depois.colecaoVersaoId }, environment: { de: antes.environmentVersaoId, para: depois.environmentVersaoId }, resumo: r.resumo },
+  });
+  return { ...r, destino: detalharDestino(params.id) };
 });
 rotas.get('/api/destinos/:id', ({ params }) => detalharDestino(params.id));
 rotas.put('/api/destinos/:id', ({ params, corpo }) => {
@@ -204,12 +221,76 @@ rotas.post('/api/importacao/postman/previa', ({ corpo }) => {
   // A prévia nunca devolve os valores dos segredos.
   return { ...p, leitura: { ...p.leitura, segredos: Object.keys(p.leitura.segredos) } };
 });
+// Aplica a importação e guarda os dois arquivos na biblioteca de APIs, ligando a integração às versões.
 rotas.post('/api/importacao/postman/aplicar', ({ corpo }) => {
   const r = aplicarImportacao(corpo?.colecao, corpo?.ambiente, {
     destinoId: txt(corpo?.destinoId), nome: corpo?.nome, tipoAmbiente: corpo?.tipoAmbiente, pacoteId: txt(corpo?.pacoteId), baseUrl: txt(corpo?.baseUrl),
+    ambienteId: txt(corpo?.ambienteId), papel: txt(corpo?.papel) as never, ente: txt(corpo?.ente),
   });
-  auditar('importacao.postman', `Collection "${r.resumo.colecao}" importada: ${r.resumo.operacoes} operações, ${r.resumo.ligadas} ligadas a entidades`, { alvoTipo: 'destino', alvoId: r.destinoId, detalhes: r.resumo });
-  return r;
+  const col = importarArquivo(corpo?.colecao, { nomeArquivo: txt(corpo?.nomeColecao) });
+  const env = corpo?.ambiente ? importarArquivo(corpo.ambiente, { nomeArquivo: txt(corpo?.nomeAmbiente) }) : undefined;
+  ligarVersoes(r.destinoId, col.versao.id, env ? env.versao.id : undefined);
+  for (const x of [col, env]) {
+    if (x?.nova) auditar('biblioteca.importar', `${x.arquivo.tipo === 'collection' ? 'Collection' : 'Environment'} ${x.arquivo.nome} v${x.versao.numero} guardado na biblioteca`, { alvoTipo: 'biblioteca', alvoId: x.arquivo.id, detalhes: { versao: x.versao.numero, hash: x.versao.hash, nomeArquivo: x.versao.nomeArquivo } });
+  }
+  auditar('importacao.postman', `Collection "${r.resumo.colecao}" importada: ${r.resumo.operacoes} operações, ${r.resumo.ligadas} ligadas a entidades`, { alvoTipo: 'destino', alvoId: r.destinoId, detalhes: { ...r.resumo, colecaoVersao: col.versao.id, environmentVersao: env?.versao.id } });
+  return { ...r, biblioteca: { colecao: { arquivoId: col.arquivo.id, numero: col.versao.numero, nova: col.nova }, environment: env ? { arquivoId: env.arquivo.id, numero: env.versao.numero, nova: env.nova } : null } };
+});
+
+// ---------------------------------------------------------------- ambientes
+rotas.get('/api/ambientes', () => listarAmbientes());
+rotas.post('/api/ambientes', ({ corpo }) => {
+  const a = criarAmbiente(corpo ?? {});
+  auditar('ambiente.criar', `Ambiente ${a.nome} criado (${a.tipo})`, { alvoTipo: 'ambiente', alvoId: a.id, detalhes: a });
+  return criado(a);
+});
+rotas.get('/api/ambientes/:id', ({ params }) => detalharAmbiente(params.id));
+rotas.put('/api/ambientes/:id', ({ params, corpo }) => {
+  const antes = obterAmbiente(params.id);
+  const a = atualizarAmbiente(params.id, corpo ?? {});
+  auditar('ambiente.alterar', `Ambiente ${a.nome} alterado`, { alvoTipo: 'ambiente', alvoId: a.id, detalhes: mudancas(antes as never, a as never, ['atualizadoEm']) });
+  return a;
+});
+rotas.delete('/api/ambientes/:id', ({ params }) => {
+  const a = obterAmbiente(params.id);
+  removerAmbiente(params.id);
+  auditar('ambiente.remover', `Ambiente ${a.nome} removido`, { alvoTipo: 'ambiente', alvoId: params.id });
+});
+rotas.post('/api/ambientes/:id/integracoes', ({ params, corpo }) => {
+  const r = integracaoDaBiblioteca(params.id, {
+    nome: txt(corpo?.nome), papel: txt(corpo?.papel) as never, ente: txt(corpo?.ente), colecaoVersaoId: txt(corpo?.colecaoVersaoId),
+    environmentVersaoId: txt(corpo?.environmentVersaoId) ?? null, baseUrl: txt(corpo?.baseUrl), pacoteId: corpo?.pacoteId === null ? null : txt(corpo?.pacoteId),
+  });
+  const d = obterDestino(r.destinoId);
+  auditar('destino.criar', `Integração ${d.nome} ligada ao ambiente ${obterAmbiente(params.id).nome} pela biblioteca (${d.papel})`, {
+    alvoTipo: 'destino', alvoId: d.id, detalhes: { ambiente: params.id, papel: d.papel, ente: d.ente, colecaoVersao: d.colecaoVersaoId, environmentVersao: d.environmentVersaoId, resumo: r.resumo },
+  });
+  return criado({ ...r, destino: detalharDestino(d.id) });
+});
+
+// ---------------------------------------------------------------- biblioteca de APIs
+rotas.get('/api/biblioteca', ({ query }) => listarBiblioteca(txt(query.get('tipo')) as TipoArquivo | undefined));
+rotas.post('/api/biblioteca', ({ corpo }) => {
+  const r = importarArquivo(corpo?.conteudo, { nomeArquivo: txt(corpo?.nomeArquivo), arquivoId: txt(corpo?.arquivoId) });
+  if (r.nova) {
+    auditar('biblioteca.importar', `${r.arquivo.tipo === 'collection' ? 'Collection' : 'Environment'} ${r.arquivo.nome} v${r.versao.numero} guardado na biblioteca`, {
+      alvoTipo: 'biblioteca', alvoId: r.arquivo.id, detalhes: { versao: r.versao.numero, hash: r.versao.hash, nomeArquivo: r.versao.nomeArquivo, resumo: r.versao.resumo },
+    });
+  }
+  return criado(r);
+});
+rotas.get('/api/biblioteca/comparar', ({ query }) => compararVersoes(String(query.get('de') ?? ''), String(query.get('para') ?? '')));
+rotas.get('/api/biblioteca/versoes/:id/arquivo', ({ params }) => {
+  const f = arquivoDaVersao(params.id);
+  const v = obterVersao(params.id);
+  auditar('biblioteca.baixar', `${v.nome} v${v.numero} baixado da biblioteca`, { alvoTipo: 'biblioteca', alvoId: v.arquivoId });
+  return arquivo(f.conteudo, 'application/json; charset=utf-8', f.nome);
+});
+rotas.get('/api/biblioteca/:id', ({ params }) => detalharArquivo(params.id));
+rotas.delete('/api/biblioteca/:id', ({ params }) => {
+  const a = detalharArquivo(params.id);
+  removerArquivo(params.id);
+  auditar('biblioteca.remover', `${a.nome} removido da biblioteca`, { alvoTipo: 'biblioteca', alvoId: params.id });
 });
 
 // ---------------------------------------------------------------- cadastros mestres

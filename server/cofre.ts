@@ -51,6 +51,20 @@ export function lerSegredo(destinoId: string, nome: string): string | undefined 
   return r ? decifrar(r.iv, r.dado, r.tag) : undefined;
 }
 
+// Segredos de uma versão de environment da biblioteca: o arquivo guardado fica sem o valor, que mora aqui.
+export function salvarSegredoVersao(versaoId: string, nome: string, valor: string): void {
+  const { iv, dado, tag } = cifrar(valor);
+  executar('INSERT OR REPLACE INTO api_segredos (versao_id, chave, iv, dado, tag) VALUES (?, ?, ?, ?, ?)', versaoId, nome, iv, dado, tag);
+}
+
+export function segredosDaVersao(versaoId: string): Record<string, string> {
+  const saida: Record<string, string> = {};
+  for (const r of todos<{ chave: string; iv: Uint8Array; dado: Uint8Array; tag: Uint8Array }>('SELECT chave, iv, dado, tag FROM api_segredos WHERE versao_id = ?', versaoId)) {
+    saida[r.chave] = decifrar(r.iv, r.dado, r.tag);
+  }
+  return saida;
+}
+
 // O que a tela pode ver de um segredo: só que existe. Identificadores (…_id) mostram os 4 últimos caracteres.
 export function resumoSegredos(destinoId: string) {
   return todos<{ chave: string; atualizado_em: string }>(

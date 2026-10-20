@@ -240,6 +240,55 @@ const MIGRACOES: string[] = [
   );
   CREATE INDEX convites_usuario ON convites (usuario_id);
   `,
+  // 4 — ambientes, biblioteca de APIs e papel da integração (v3.0, etapa 1)
+  `
+  CREATE TABLE ambientes (
+    id TEXT PRIMARY KEY,
+    nome TEXT NOT NULL UNIQUE,
+    sistema TEXT,
+    tipo TEXT NOT NULL CHECK (tipo IN ('sandbox', 'homologacao', 'desenvolvimento')),
+    pacote_id TEXT REFERENCES pacotes(id) ON DELETE SET NULL,
+    descricao TEXT,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
+  CREATE TABLE api_arquivos (
+    id TEXT PRIMARY KEY,
+    tipo TEXT NOT NULL CHECK (tipo IN ('collection', 'environment')),
+    nome TEXT NOT NULL,
+    descricao TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL,
+    UNIQUE (tipo, nome)
+  );
+  CREATE TABLE api_versoes (
+    id TEXT PRIMARY KEY,
+    arquivo_id TEXT NOT NULL REFERENCES api_arquivos(id) ON DELETE CASCADE,
+    numero INTEGER NOT NULL,
+    nome_arquivo TEXT,
+    conteudo TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    resumo TEXT NOT NULL DEFAULT '{}',
+    importado_por TEXT,
+    importado_em TEXT NOT NULL,
+    UNIQUE (arquivo_id, numero)
+  );
+  CREATE TABLE api_segredos (
+    versao_id TEXT NOT NULL REFERENCES api_versoes(id) ON DELETE CASCADE,
+    chave TEXT NOT NULL,
+    iv BLOB NOT NULL,
+    dado BLOB NOT NULL,
+    tag BLOB NOT NULL,
+    PRIMARY KEY (versao_id, chave)
+  );
+  ALTER TABLE destinos ADD COLUMN ambiente_id TEXT REFERENCES ambientes(id) ON DELETE SET NULL;
+  ALTER TABLE destinos ADD COLUMN papel TEXT NOT NULL DEFAULT 'cliente';
+  ALTER TABLE destinos ADD COLUMN ente TEXT;
+  ALTER TABLE destinos ADD COLUMN colecao_versao_id TEXT REFERENCES api_versoes(id) ON DELETE SET NULL;
+  ALTER TABLE destinos ADD COLUMN environment_versao_id TEXT REFERENCES api_versoes(id) ON DELETE SET NULL;
+  CREATE INDEX destinos_ambiente ON destinos (ambiente_id);
+  `,
 ];
 
 function migrar(): void {

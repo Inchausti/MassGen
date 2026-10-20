@@ -3,6 +3,7 @@ import { del, get, post, put } from '../api.ts';
 import { Link, useRota } from '../rotas.tsx';
 import {
   Abas, Cabecalho, CaixaErro, Campo, Carregando, Json, Metodo, Modal, Painel, Vazio, quando, relativo, useAcao, useCarregar, ROTULO_AMBIENTE, ROTULO_AUTH,
+  SeloIntegracao, SeloPapel, VersaoBiblioteca,
 } from '../ui.tsx';
 import { FormDestino, type FormularioDestino } from './Destinos.tsx';
 import { Divergencias, ImportarPostman } from './ImportarPostman.tsx';
@@ -14,6 +15,7 @@ export function DestinoDetalhe({ id }: { id: string }) {
   const [aba, setAba] = useState<Aba>((busca.get('aba') as Aba) || 'conexao');
   const d = useCarregar(() => get(`/destinos/${id}`), [id]);
   const pacotes = useCarregar(() => get('/pacotes'));
+  const ambientes = useCarregar(() => get('/ambientes'));
   const mudarAba = (a: Aba) => { setAba(a); navegar(`/destinos/${id}?aba=${a}`, true); };
   if (d.carregando && !d.dados) return <div className="pagina"><Carregando /></div>;
   if (!d.dados) return <div className="pagina"><CaixaErro erro={d.erro} /></div>;
@@ -21,10 +23,11 @@ export function DestinoDetalhe({ id }: { id: string }) {
   return (
     <div className="pagina">
       <Cabecalho
-        migalha={<Link para="/destinos">Destinos</Link>}
-        titulo={x.nome}
+        migalha={<>{x.ambiente ? <><Link para={`/ambientes/${x.ambiente.id}`}>{x.ambiente.nome}</Link> / </> : null}<Link para="/destinos">Integrações</Link></>}
+        titulo={<>{x.nome} <SeloPapel papel={x.papel} ente={x.ente} /> <SeloIntegracao status={x.status} /></>}
         sub={<><span className="mono">{x.baseUrl}</span> · {ROTULO_AMBIENTE[x.tipoAmbiente]} · {ROTULO_AUTH[x.autenticacao.tipo]}{x.pacote ? ` · pacote ${x.pacote.nome}` : ''}</>}
       />
+      {x.status === 'aguardando_rota' && <div className="alerta aviso"><div><strong>Aguardando rota.</strong> O sistema testado ainda não expõe as rotas para receber os eventos de {x.ente ?? 'este ente'}. Quando a collection dessas rotas chegar, importe-a na aba <em>Importar do Postman</em> ou ligue uma versão da biblioteca.</div></div>}
       {!x.dominio.ok && <div className="alerta erro"><div><strong>Envio bloqueado pela trava de produção.</strong> {x.dominio.motivo}</div></div>}
       {x.segredosFaltando.length > 0 && <div className="alerta aviso"><div>Falta no cofre: <strong>{x.segredosFaltando.join(', ')}</strong>. <button className="botao pequeno" onClick={() => mudarAba('segredos')}>Preencher</button></div></div>}
       <Abas<Aba>
@@ -33,10 +36,10 @@ export function DestinoDetalhe({ id }: { id: string }) {
         ativa={aba} aoMudar={mudarAba}
       />
       {aba === 'conexao' && <Conexao destino={x} aoTestar={() => d.recarregar(true)} />}
-      {aba === 'config' && <Configuracao destino={x} pacotes={pacotes.dados ?? []} aoSalvar={() => d.recarregar(true)} />}
+      {aba === 'config' && <Configuracao destino={x} pacotes={pacotes.dados ?? []} ambientes={ambientes.dados ?? []} aoSalvar={() => d.recarregar(true)} />}
       {aba === 'segredos' && <Segredos destino={x} aoMudar={(nd) => d.setDados(nd)} />}
       {aba === 'estrutura' && <Estrutura destinoId={id} temPacote={!!x.pacoteId} />}
-      {aba === 'importar' && <ImportarPostman destinoId={id} pacotes={pacotes.dados ?? []} aoConcluir={() => { d.recarregar(true); mudarAba('estrutura'); }} />}
+      {aba === 'importar' && <ImportarPostman destinoId={id} pacotes={pacotes.dados ?? []} ambientes={ambientes.dados ?? []} aoConcluir={() => { d.recarregar(true); mudarAba('estrutura'); }} />}
       {aba === 'historico' && <Historico destinoId={id} />}
     </div>
   );
@@ -66,7 +69,10 @@ function Conexao({ destino, aoTestar }: { destino: any; aoTestar: () => void }) 
       <Painel titulo="Resumo">
         <dl className="kv">
           <dt>Endereço</dt><dd className="mono">{destino.baseUrl}</dd>
-          <dt>Ambiente</dt><dd>{ROTULO_AMBIENTE[destino.tipoAmbiente]}</dd>
+          <dt>Ambiente</dt><dd>{destino.ambiente ? <Link para={`/ambientes/${destino.ambiente.id}`}>{destino.ambiente.nome}</Link> : null} <span className="dica">{ROTULO_AMBIENTE[destino.tipoAmbiente]}</span></dd>
+          <dt>Papel</dt><dd><SeloPapel papel={destino.papel} ente={destino.ente} /></dd>
+          <dt>Collection</dt><dd><VersaoBiblioteca v={destino.colecao} /></dd>
+          <dt>Environment</dt><dd><VersaoBiblioteca v={destino.environment} /></dd>
           <dt>Autenticação</dt><dd>{ROTULO_AUTH[destino.autenticacao.tipo]}{destino.autenticacao.tokenUrl ? ` · ${destino.autenticacao.tokenUrl}` : ''}</dd>
           <dt>Limite</dt><dd>{destino.limites.porMinuto ?? 600} req/min · {destino.limites.tentativas ?? 4} tentativas</dd>
           <dt>Idempotência</dt><dd>{destino.idempotencia.cabecalho || 'Sem'}</dd>
@@ -79,25 +85,26 @@ function Conexao({ destino, aoTestar }: { destino: any; aoTestar: () => void }) 
   );
 }
 
-function Configuracao({ destino, pacotes, aoSalvar }: { destino: any; pacotes: any[]; aoSalvar: () => void }) {
+function Configuracao({ destino, pacotes, ambientes, aoSalvar }: { destino: any; pacotes: any[]; ambientes: any[]; aoSalvar: () => void }) {
   const { navegar } = useRota();
   const inicial: FormularioDestino = {
     nome: destino.nome, tipoAmbiente: destino.tipoAmbiente, baseUrl: destino.baseUrl, pacoteId: destino.pacoteId, autenticacao: destino.autenticacao,
+    ambienteId: destino.ambienteId, papel: destino.papel, ente: destino.ente,
     limites: destino.limites, idempotencia: destino.idempotencia, rastreio: destino.rastreio ?? {}, cabecalhos: destino.cabecalhos, variaveis: destino.variaveis,
     teste: destino.teste, ativo: destino.ativo,
   };
   const [form, setForm] = useState(inicial);
   const acao = useAcao();
-  const salvar = async () => { if (await acao.executar(() => put(`/destinos/${destino.id}`, form), 'Destino salvo.')) aoSalvar(); };
+  const salvar = async () => { if (await acao.executar(() => put(`/destinos/${destino.id}`, form), 'Integração salva.')) aoSalvar(); };
   const remover = async () => {
-    if (!confirm(`Remover o destino ${destino.nome}? As operações e os segredos dele também saem. A trilha de auditoria fica.`)) return;
-    if ((await acao.executar(() => del(`/destinos/${destino.id}`), 'Destino removido.')) !== undefined) navegar('/destinos');
+    if (!confirm(`Remover a integração ${destino.nome}? As operações e os segredos dela também saem. A trilha de auditoria fica.`)) return;
+    if ((await acao.executar(() => del(`/destinos/${destino.id}`), 'Integração removida.')) !== undefined) navegar('/destinos');
   };
   return (
     <div className="pilha">
       <CaixaErro erro={acao.erro} />
-      <FormDestino valor={form} aoMudar={setForm} pacotes={pacotes} novo={false} />
-      <div className="acoes"><button className="botao primario" disabled={acao.ocupado} onClick={salvar}>Salvar</button><button className="botao" onClick={() => setForm(inicial)}>Desfazer</button><span className="espaco" /><button className="botao perigo" onClick={remover}>Remover destino</button></div>
+      <FormDestino valor={form} aoMudar={setForm} pacotes={pacotes} ambientes={ambientes} novo={false} />
+      <div className="acoes"><button className="botao primario" disabled={acao.ocupado} onClick={salvar}>Salvar</button><button className="botao" onClick={() => setForm(inicial)}>Desfazer</button><span className="espaco" /><button className="botao perigo" onClick={remover}>Remover integração</button></div>
     </div>
   );
 }

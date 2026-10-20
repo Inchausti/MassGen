@@ -62,6 +62,9 @@ export async function gerarExecucao(cenarioId: string, opcoes: { semente?: numbe
   const destinoId = opcoes.destinoId ?? cen.destinoId;
   if (!destinoId) throw new ErroHttp(422, 'Escolha o destino do cenário antes de gerar: as variáveis do destino entram na massa.');
   const destino = obterDestino(destinoId);
+  if (destino.papel === 'emulador') {
+    throw new ErroHttp(422, `A integração ${destino.nome} é de ente emulado: ela não recebe a massa do cenário. Os eventos dela vêm da emulação do ente, a partir do contexto do ambiente.`);
+  }
   if (!cen.pacoteId) throw new ErroHttp(422, 'O cenário não tem pacote.');
   const modelos = modelosDoPacote(cen.pacoteId);
   const definicao: DefinicaoCenario = cen.definicao;

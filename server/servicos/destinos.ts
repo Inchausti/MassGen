@@ -1,4 +1,6 @@
-// Destinos: cadastro, segredos, operações (estrutura de APIs) e importação do Postman.
+// Integrações (no código, "destinos"): cadastro, papel, segredos, operações (estrutura de APIs) e importação do Postman.
+// Desde a v3.0 toda integração pertence a um ambiente e tem um papel: cliente (o app chama a API do sistema testado)
+// ou emulador (o app faz o papel de um ente que o sistema integra e entrega eventos nas rotas do sistema).
 import { agora, executar, json, novoId, todos, transacao, um } from '../db.ts';
 import { conferirDominio } from '../config.ts';
 import { ErroHttp } from '../http.ts';
@@ -7,9 +9,14 @@ import type { Autenticacao, ResultadoLeitura } from '../importers/postman.ts';
 import { corpoComoJson, lerPostman, normalizarRota } from '../importers/postman.ts';
 import { modelosDoPacote, obterPacote, type OperacaoPadrao } from './pacotes.ts';
 import { caminhosFolha } from '../core/caminhos.ts';
+import { ambientePadraoPara, obterAmbiente } from './ambientes.ts';
+import { environmentComSegredos, obterVersao, rotuloVersao } from './biblioteca.ts';
 import type { ModeloEntidade } from '../core/tipos.ts';
 
 export type TipoAmbiente = 'sandbox' | 'homologacao' | 'desenvolvimento';
+export type Papel = 'cliente' | 'emulador';
+export const PAPEIS: Papel[] = ['cliente', 'emulador'];
+export type StatusIntegracao = 'pronta' | 'sem_teste' | 'falha' | 'aguardando_rota' | 'inativa';
 
 export interface Destino {
   id: string;
@@ -26,6 +33,11 @@ export interface Destino {
   rastreio: { cabecalho?: string };
   ativo: boolean;
   ultimoTeste: unknown;
+  ambienteId: string | null;
+  papel: Papel;
+  ente: string | null;
+  colecaoVersaoId: string | null;
+  environmentVersaoId: string | null;
   criadoEm: string;
   atualizadoEm: string;
 }
@@ -67,6 +79,11 @@ function linhaParaDestino(l: Record<string, unknown>): Destino {
     rastreio: json(l.rastreio, { cabecalho: 'X-MassGen-Rastreio' }),
     ativo: !!l.ativo,
     ultimoTeste: json(l.ultimo_teste, null),
+    ambienteId: (l.ambiente_id as string) ?? null,
+    papel: ((l.papel as string) === 'emulador' ? 'emulador' : 'cliente') as Papel,
+    ente: (l.ente as string) ?? null,
+    colecaoVersaoId: (l.colecao_versao_id as string) ?? null,
+    environmentVersaoId: (l.environment_versao_id as string) ?? null,
     criadoEm: l.criado_em as string,
     atualizadoEm: l.atualizado_em as string,
   };
@@ -91,11 +108,32 @@ export function obterDestino(id: string): Destino {
   return linhaParaDestino(l);
 }
 
-export function listarDestinos() {
-  return todos('SELECT * FROM destinos ORDER BY nome').map((l) => {
+// Situação da integração para a tela. Ente emulado sem nenhuma rota ainda aguarda as rotas do sistema testado.
+export function statusIntegracao(d: Destino, operacoes: number): StatusIntegracao {
+  if (!d.ativo) return 'inativa';
+  if (d.papel === 'emulador' && operacoes === 0) return 'aguardando_rota';
+  const t = d.ultimoTeste as { ok?: boolean } | null;
+  if (!t) return 'sem_teste';
+  return t.ok ? 'pronta' : 'falha';
+}
+
+function nomeDoAmbiente(id: string | null): { id: string; nome: string } | null {
+  if (!id) return null;
+  const a = um<{ id: string; nome: string }>('SELECT id, nome FROM ambientes WHERE id = ?', id);
+  return a ? { id: a.id, nome: a.nome } : null;
+}
+
+export function listarDestinos(filtro: { ambienteId?: string } = {}) {
+  const linhas = filtro.ambienteId
+    ? todos('SELECT * FROM destinos WHERE ambiente_id = ? ORDER BY nome', filtro.ambienteId)
+    : todos('SELECT * FROM destinos ORDER BY nome');
+  return linhas.map((l) => {
     const d = linhaParaDestino(l);
     const ops = um<{ n: number }>('SELECT COUNT(*) AS n FROM operacoes WHERE destino_id = ?', d.id)?.n ?? 0;
-    return { ...d, operacoes: ops, segredos: resumoSegredos(d.id) };
+    return {
+      ...d, operacoes: ops, segredos: resumoSegredos(d.id), status: statusIntegracao(d, ops), ambiente: nomeDoAmbiente(d.ambienteId),
+      colecao: rotuloVersao(d.colecaoVersaoId), environment: rotuloVersao(d.environmentVersaoId),
+    };
   });
 }
 
@@ -103,8 +141,13 @@ export function detalharDestino(id: string) {
   const d = obterDestino(id);
   const exigidos = SEGREDOS_POR_AUTH[d.autenticacao.tipo] ?? [];
   const segredos = resumoSegredos(id);
+  const ops = um<{ n: number }>('SELECT COUNT(*) AS n FROM operacoes WHERE destino_id = ?', id)?.n ?? 0;
   return {
     ...d,
+    status: statusIntegracao(d, ops),
+    ambiente: nomeDoAmbiente(d.ambienteId),
+    colecao: rotuloVersao(d.colecaoVersaoId),
+    environment: rotuloVersao(d.environmentVersaoId),
     segredos,
     segredosFaltando: exigidos.filter((s) => !segredos.some((x) => x.chave === s)),
     dominio: conferirDominio(d.baseUrl, dominiosProducaoDo(d)),
@@ -113,7 +156,9 @@ export function detalharDestino(id: string) {
 }
 
 function validarDestino(dados: Partial<Destino>): void {
-  if (!dados.nome?.trim()) throw new ErroHttp(422, 'Informe o nome do destino.');
+  if (!dados.nome?.trim()) throw new ErroHttp(422, 'Informe o nome da integração.');
+  if (dados.papel && !PAPEIS.includes(dados.papel)) throw new ErroHttp(422, 'Papel da integração: cliente ou emulador.');
+  if (dados.papel === 'emulador' && !dados.ente?.trim()) throw new ErroHttp(422, 'Informe qual ente a integração emula, como Receita Federal ou Comitê Gestor do IBS.');
   if (!['sandbox', 'homologacao', 'desenvolvimento'].includes(dados.tipoAmbiente ?? '')) {
     throw new ErroHttp(422, 'Tipo de ambiente: sandbox, homologação ou desenvolvimento. Produção não é aceita.');
   }
@@ -126,6 +171,11 @@ function validarDestino(dados: Partial<Destino>): void {
 }
 
 export function criarDestino(dados: Partial<Destino>): Destino {
+  // O ambiente manda no tipo e sugere o pacote. Sem ambiente (v2.0), vai para o ambiente do pacote e do tipo.
+  if (dados.ambienteId) {
+    const amb = obterAmbiente(dados.ambienteId);
+    dados = { ...dados, tipoAmbiente: amb.tipo, pacoteId: dados.pacoteId === undefined ? amb.pacoteId : dados.pacoteId };
+  }
   const pacote = dados.pacoteId ? obterPacote(dados.pacoteId) : undefined;
   if (dados.pacoteId && !pacote) throw new ErroHttp(422, 'Pacote não encontrado.');
   const padrao = pacote?.destinoPadrao ?? {};
@@ -140,29 +190,36 @@ export function criarDestino(dados: Partial<Destino>): Destino {
     rastreio: dados.rastreio ?? { cabecalho: 'X-MassGen-Rastreio' },
   };
   validarDestino(completo);
+  const ambienteId = dados.ambienteId ?? ambientePadraoPara(completo.pacoteId ?? null, completo.tipoAmbiente!).id;
+  const papel: Papel = dados.papel ?? 'cliente';
   const id = novoId('dst');
   const t = agora();
   executar(
-    `INSERT INTO destinos (id, nome, tipo_ambiente, base_url, pacote_id, autenticacao, limites, idempotencia, cabecalhos, variaveis, teste, rastreio, ativo, criado_em, atualizado_em)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO destinos (id, nome, tipo_ambiente, base_url, pacote_id, autenticacao, limites, idempotencia, cabecalhos, variaveis, teste, rastreio, ativo,
+       ambiente_id, papel, ente, criado_em, atualizado_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
     id, completo.nome!.trim(), completo.tipoAmbiente!, completo.baseUrl!.replace(/\/$/, ''), completo.pacoteId ?? null,
     JSON.stringify(completo.autenticacao), JSON.stringify(completo.limites), JSON.stringify(completo.idempotencia),
-    JSON.stringify(completo.cabecalhos), JSON.stringify(completo.variaveis), JSON.stringify(completo.teste), JSON.stringify(completo.rastreio), t, t,
+    JSON.stringify(completo.cabecalhos), JSON.stringify(completo.variaveis), JSON.stringify(completo.teste), JSON.stringify(completo.rastreio),
+    ambienteId, papel, papel === 'emulador' ? completo.ente!.trim() : null, t, t,
   );
-  if (pacote) aplicarOperacoesDoPacote(id);
+  // Ente emulado não recebe as operações padrão de cliente do pacote: as rotas dele são as que o sistema testado expõe.
+  if (pacote && papel === 'cliente') aplicarOperacoesDoPacote(id);
   return obterDestino(id);
 }
 
 export function atualizarDestino(id: string, dados: Partial<Destino>): Destino {
   const atual = obterDestino(id);
   const novo = { ...atual, ...dados, id };
+  if (novo.ambienteId) novo.tipoAmbiente = obterAmbiente(novo.ambienteId).tipo;
   validarDestino(novo);
   executar(
     `UPDATE destinos SET nome = ?, tipo_ambiente = ?, base_url = ?, pacote_id = ?, autenticacao = ?, limites = ?, idempotencia = ?,
-       cabecalhos = ?, variaveis = ?, teste = ?, rastreio = ?, ativo = ?, atualizado_em = ? WHERE id = ?`,
+       cabecalhos = ?, variaveis = ?, teste = ?, rastreio = ?, ativo = ?, ambiente_id = ?, papel = ?, ente = ?, atualizado_em = ? WHERE id = ?`,
     novo.nome.trim(), novo.tipoAmbiente, novo.baseUrl.replace(/\/$/, ''), novo.pacoteId ?? null, JSON.stringify(novo.autenticacao),
     JSON.stringify(novo.limites), JSON.stringify(novo.idempotencia), JSON.stringify(novo.cabecalhos), JSON.stringify(novo.variaveis),
-    JSON.stringify(novo.teste), JSON.stringify(novo.rastreio ?? {}), novo.ativo ? 1 : 0, agora(), id,
+    JSON.stringify(novo.teste), JSON.stringify(novo.rastreio ?? {}), novo.ativo ? 1 : 0, novo.ambienteId, novo.papel,
+    novo.papel === 'emulador' ? novo.ente?.trim() || null : null, agora(), id,
   );
   return obterDestino(id);
 }
@@ -170,7 +227,7 @@ export function atualizarDestino(id: string, dados: Partial<Destino>): Destino {
 export function removerDestino(id: string): void {
   obterDestino(id);
   const ativa = um<{ n: number }>("SELECT COUNT(*) AS n FROM execucoes WHERE destino_id = ? AND status IN ('enviando', 'conferindo')", id);
-  if (ativa && ativa.n) throw new ErroHttp(409, 'Há execução em andamento neste destino.');
+  if (ativa && ativa.n) throw new ErroHttp(409, 'Há execução em andamento nesta integração.');
   executar('DELETE FROM destinos WHERE id = ?', id);
 }
 
@@ -363,7 +420,9 @@ export function previaImportacao(colecao: unknown, ambiente: unknown, destinoId?
 }
 
 // Aplica a importação: cria o destino (ou atualiza) e troca as operações importadas. As manuais ficam.
-export function aplicarImportacao(colecao: unknown, ambiente: unknown, opcoes: { destinoId?: string; nome?: string; tipoAmbiente?: TipoAmbiente; pacoteId?: string; baseUrl?: string }) {
+export function aplicarImportacao(colecao: unknown, ambiente: unknown, opcoes: {
+  destinoId?: string; nome?: string; tipoAmbiente?: TipoAmbiente; pacoteId?: string; baseUrl?: string; ambienteId?: string; papel?: Papel; ente?: string;
+}) {
   const previa = previaImportacao(colecao, ambiente, opcoes.destinoId, opcoes.pacoteId);
   const l = previa.leitura;
   return transacao(() => {
@@ -377,10 +436,11 @@ export function aplicarImportacao(colecao: unknown, ambiente: unknown, opcoes: {
       });
     } else {
       const base = opcoes.baseUrl || l.baseUrl;
-      if (!base) throw new ErroHttp(422, 'O environment não trouxe o endereço base. Informe o endereço do destino.');
+      if (!base) throw new ErroHttp(422, 'O environment não trouxe o endereço base. Informe o endereço da integração.');
       destinoId = criarDestino({
         nome: opcoes.nome || l.nomeColecao, tipoAmbiente: opcoes.tipoAmbiente ?? 'sandbox', baseUrl: base,
-        pacoteId: opcoes.pacoteId ?? null, autenticacao: l.autenticacao, variaveis: l.variaveis,
+        pacoteId: opcoes.pacoteId ?? (opcoes.ambienteId ? undefined : null), autenticacao: l.autenticacao, variaveis: l.variaveis,
+        ambienteId: opcoes.ambienteId, papel: opcoes.papel, ente: opcoes.ente,
       }).id;
       executar("DELETE FROM operacoes WHERE destino_id = ? AND origem = 'pacote'", destinoId);
     }
@@ -398,7 +458,7 @@ export function aplicarImportacao(colecao: unknown, ambiente: unknown, opcoes: {
       const destinoChave = /client_?id/i.test(chave) ? 'client_id' : /client_?secret/i.test(chave) ? 'client_secret' : chave;
       salvarSegredo(destinoId, destinoChave, valor);
     }
-    const ops = aplicarOperacoesDoPacote(destinoId);
+    const ops = obterDestino(destinoId).papel === 'cliente' ? aplicarOperacoesDoPacote(destinoId) : 0;
     const resumo = {
       colecao: l.nomeColecao, operacoes: previa.operacoes.filter((o) => o.situacao !== 'token').length,
       ligadas: previa.operacoes.filter((o) => o.entidade).length, doPacote: ops, segredos: Object.keys(l.segredos).length,
@@ -413,4 +473,47 @@ export function historicoImportacoes(destinoId: string) {
   return todos<{ id: string; tipo: string; resumo: string; criado_em: string }>(
     'SELECT * FROM importacoes WHERE destino_id = ? ORDER BY criado_em DESC LIMIT 20', destinoId,
   ).map((i) => ({ id: i.id, tipo: i.tipo, resumo: json(i.resumo, {}), criadoEm: i.criado_em }));
+}
+
+// ---------------------------------------------------------------- integração e biblioteca de APIs
+
+// Liga a integração às versões da biblioteca de onde vieram a collection e o environment.
+export function ligarVersoes(destinoId: string, colecaoVersaoId: string | null, environmentVersaoId?: string | null): void {
+  const sets = ['colecao_versao_id = ?'];
+  const params: (string | null)[] = [colecaoVersaoId];
+  if (environmentVersaoId !== undefined) { sets.push('environment_versao_id = ?'); params.push(environmentVersaoId); }
+  executar(`UPDATE destinos SET ${sets.join(', ')}, atualizado_em = ? WHERE id = ?`, ...params, agora(), destinoId);
+}
+
+function conteudosDaBiblioteca(colecaoVersaoId: string, environmentVersaoId?: string | null) {
+  const col = obterVersao(colecaoVersaoId);
+  if (col.tipo !== 'collection') throw new ErroHttp(422, `${col.nome} não é uma collection.`);
+  return { colecao: col.conteudo, ambiente: environmentVersaoId ? environmentComSegredos(environmentVersaoId) : undefined };
+}
+
+// Cria uma integração num ambiente a partir de uma collection e de um environment da biblioteca.
+export function integracaoDaBiblioteca(ambienteId: string, dados: {
+  nome?: string; papel?: Papel; ente?: string; colecaoVersaoId?: string; environmentVersaoId?: string | null; baseUrl?: string; pacoteId?: string | null;
+}) {
+  const amb = obterAmbiente(ambienteId);
+  if (!dados.colecaoVersaoId) throw new ErroHttp(422, 'Escolha a collection da biblioteca.');
+  const { colecao, ambiente } = conteudosDaBiblioteca(dados.colecaoVersaoId, dados.environmentVersaoId);
+  const r = aplicarImportacao(colecao, ambiente, {
+    nome: dados.nome, ambienteId: amb.id, tipoAmbiente: amb.tipo, papel: dados.papel ?? 'cliente', ente: dados.ente, baseUrl: dados.baseUrl,
+    pacoteId: dados.pacoteId === undefined ? amb.pacoteId ?? undefined : dados.pacoteId ?? undefined,
+  });
+  ligarVersoes(r.destinoId, dados.colecaoVersaoId, dados.environmentVersaoId ?? null);
+  return r;
+}
+
+// Passa a integração para outra versão da collection e/ou do environment. As operações editadas à mão ficam.
+export function trocarVersoes(destinoId: string, dados: { colecaoVersaoId?: string; environmentVersaoId?: string | null }) {
+  const d = obterDestino(destinoId);
+  const colId = dados.colecaoVersaoId ?? d.colecaoVersaoId;
+  if (!colId) throw new ErroHttp(422, 'Esta integração não veio da biblioteca: importe uma collection nela antes de trocar a versão.');
+  const envId = dados.environmentVersaoId === undefined ? d.environmentVersaoId : dados.environmentVersaoId;
+  const { colecao, ambiente } = conteudosDaBiblioteca(colId, envId);
+  const r = aplicarImportacao(colecao, ambiente, { destinoId });
+  ligarVersoes(destinoId, colId, envId ?? null);
+  return r;
 }

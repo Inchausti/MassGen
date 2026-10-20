@@ -35,7 +35,7 @@ Ela fica em http://localhost:8089, com `client_id` **massgen** e `client_secret`
 
 ## Como usar
 
-1. **Destino** — em *Destinos › Novo destino*, importe a collection e o environment do Postman ou preencha à mão. As credenciais vão para a aba *Segredos* (cofre). Use *Testar conexão*.
+1. **Ambiente e integrações** — em *Ambientes*, crie o ambiente do sistema testado (por exemplo, *SplitHub — Sandbox*). Guarde as collections e os environments em *Biblioteca de APIs* e ligue cada integração ao ambiente com o papel dela. Também dá para importar do Postman ou preencher à mão em *Integrações › Nova integração*. As credenciais vão para a aba *Segredos* (cofre). Use *Testar conexão*.
 2. **Estrutura de APIs** — cada operação ligada a uma entidade e a uma ação (`criar`, `consultar`…). O que a collection não tem vem do pacote. As divergências entre a collection e o modelo aparecem ali.
 3. **Modelos e cadastros** — ajuste os modelos do pacote (campos, geradores, regras, perfis, casos de borda) e veja um exemplo antes de salvar. Salve empresas, contratos e o que mais quiser como cadastros mestres.
 4. **Cenário** — parta de um cenário pronto do pacote (C-01 a C-05) e ajuste as quantidades, os perfis, os cadastros e os casos de borda. *Gerar massa* cria a execução, sem enviar nada.
@@ -62,6 +62,16 @@ O app pede login: e-mail e senha. Ninguém se cadastra sozinho.
 - **Sessão:** 12 horas (`MASSGEN_SESSAO_HORAS`), num cookie `HttpOnly` e `SameSite=Lax`, também `Secure` quando `MASSGEN_URL_PUBLICA` é `https`. Cinco senhas erradas seguidas, para o mesmo e-mail e IP, bloqueiam o login por 15 minutos.
 - **Desativar** alguém derruba as sessões abertas na hora. Ninguém desativa a si mesmo, e o último root ativo não perde o papel.
 - **Guardados só em hash:** a senha (scrypt) e os tokens de sessão e de convite (SHA-256). Nenhum dos dois entra na trilha.
+
+## Ambientes, integrações e biblioteca de APIs
+
+Desde a v3.0 o app trabalha por **ambiente de teste**. Um ambiente é um sistema testado num tipo de ambiente — sandbox, homologação ou desenvolvimento — e reúne as integrações dele. As próximas etapas levam para o ambiente os dados mestre e os contextos de massa.
+
+- **Integração:** uma API ligada ao ambiente, com um papel. No papel **cliente**, o app chama a API do sistema testado, como um cliente faria. No papel **ente emulado**, o app faz o papel de um terceiro que o sistema integra (por exemplo, Receita Federal ou Comitê Gestor do IBS) e entrega os eventos dele nas rotas que o sistema expõe. Enquanto o sistema não expõe essas rotas, a integração fica *Aguardando rota*. Ente emulado não recebe a massa de um cenário.
+- **Biblioteca de APIs:** guarda collections e environments do Postman como arquivo original, com versão, de qualquer sistema. Importar o mesmo arquivo de novo não cria versão; um arquivo diferente vira a versão seguinte, e a tela compara duas versões (requisições ou variáveis novas, removidas e alteradas). A mesma collection serve a integrações de ambientes diferentes, cada uma com o seu environment.
+- **Segredos do environment:** o valor de cada segredo vai para o cofre da versão, e o arquivo guardado fica sem ele. Tokens de execução (`access_token` e afins) não são guardados. Ao ligar uma integração, os segredos passam do cofre da biblioteca para o cofre dela.
+- **Trocar de versão:** a integração mostra quando há uma versão mais nova na biblioteca. Trocar reaplica a importação: as operações importadas são substituídas, e as editadas à mão ficam.
+- **Migração da v2.0:** na primeira subida da v3.0, cada destino vai para o ambiente do seu pacote e do seu tipo (*SplitHub — Sandbox*, por exemplo), criado na hora se não existir.
 
 ## Destinos e a trava de produção
 
