@@ -44,6 +44,8 @@ export const config = {
     : (process.env.MASSGEN_URL_PUBLICA ?? '').trim().toLowerCase().startsWith('https://'),
   // Duração da sessão, em horas.
   sessaoHoras: Number(process.env.MASSGEN_SESSAO_HORAS || 12),
+  // Espera entre as tentativas do aviso ao webhook do SplitHub, em ms. "2000,5000": três tentativas.
+  avisoEsperasMs: (process.env.MASSGEN_AVISO_ESPERAS_MS || '2000,5000').split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x >= 0),
 };
 
 function casa(host: string, regra: string): boolean {

@@ -87,7 +87,7 @@ export function acoesAuditadas(): string[] {
 // ---------------------------------------------------------------- requisições encadeadas
 
 export interface ConteudoRequisicao {
-  execucao_id: string | null; destino_id: string; registro_id: string | null; operacao_id: string | null; fase: string; entidade: string | null;
+  execucao_id: string | null; destino_id: string | null; registro_id: string | null; operacao_id: string | null; fase: string; entidade: string | null;
   metodo: string; url: string; status: number | null; duracao_ms: number; tentativa: number; chave_idempotencia: string | null;
   req_cabecalhos: string; req_corpo: string | null; res_cabecalhos: string; res_corpo: string | null; erro: string | null; codigo_erro: string | null;
   resultado: string | null; criado_em: string; usuario: string | null; rastreio: string | null; corpo_hash: string | null;

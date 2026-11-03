@@ -65,6 +65,21 @@ export function segredosDaVersao(versaoId: string): Record<string, string> {
   return saida;
 }
 
+// Segredos de uma POC, como o tokenContrib que o SplitHub informa na habilitação do IBS e o MassGen devolve no aviso.
+export function salvarSegredoPoc(pocId: string, nome: string, valor: string): void {
+  const { iv, dado, tag } = cifrar(valor);
+  executar('INSERT OR REPLACE INTO poc_segredos (poc_id, chave, iv, dado, tag) VALUES (?, ?, ?, ?, ?)', pocId, nome, iv, dado, tag);
+}
+
+export function removerSegredoPoc(pocId: string, nome: string): void {
+  executar('DELETE FROM poc_segredos WHERE poc_id = ? AND chave = ?', pocId, nome);
+}
+
+export function lerSegredoPoc(pocId: string, nome: string): string | undefined {
+  const r = um<{ iv: Uint8Array; dado: Uint8Array; tag: Uint8Array }>('SELECT iv, dado, tag FROM poc_segredos WHERE poc_id = ? AND chave = ?', pocId, nome);
+  return r ? decifrar(r.iv, r.dado, r.tag) : undefined;
+}
+
 // O que a tela pode ver de um segredo: só que existe. Identificadores (…_id) mostram os 4 últimos caracteres.
 export function resumoSegredos(destinoId: string) {
   return todos<{ chave: string; atualizado_em: string }>(

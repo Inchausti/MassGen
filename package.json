@@ -2,7 +2,7 @@
   "name": "massgen",
   "version": "0.1.0",
   "private": true,
-  "description": "Gerador de massa de dados genérico: modela entidades, gera massa coerente, envia a APIs de destino, acompanha cada requisição e confere o resultado.",
+  "description": "Emulador da apuração assistida da CBS e do IBS para POCs do SplitHub: lê os XMLs do cliente, monta o barramento pela documentação dos entes, avisa o webhook e serve os arquivos.",
   "type": "module",
   "engines": {
     "node": ">=24"

@@ -6,6 +6,7 @@ import { config } from './config.ts';
 import './db.ts';
 import { despachar, responderJson } from './http.ts';
 import { rotas } from './rotas.ts';
+import { entes } from './entes/ibs.ts';
 import { garantirPacotesEmbutidos } from './servicos/pacotes.ts';
 import { marcarInterrompidas } from './servicos/execucoes.ts';
 import { auditar } from './auditoria.ts';
@@ -30,6 +31,11 @@ const servidor = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname.startsWith('/api/')) {
     if (!(await despachar(rotas, req, res, url))) responderJson(res, 404, { erro: 'Rota não encontrada.' });
+    return;
+  }
+  // Entes emulados: as rotas da documentação deles, chamadas pelo SplitHub da POC com a credencial emitida pelo MassGen.
+  if (url.pathname.startsWith('/entes/')) {
+    if (!(await despachar(entes, req, res, url))) responderJson(res, 404, { resultado: 'ERRO', mensagem: 'Rota não encontrada no ente emulado.' });
     return;
   }
   if (!existsSync(config.dirWeb)) {

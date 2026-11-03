@@ -293,6 +293,189 @@ const MIGRACOES: string[] = [
   `
   ALTER TABLE cadastros ADD COLUMN pais TEXT NOT NULL DEFAULT '{}';
   `,
+  // 6 — POC da apuração assistida (v4.3, etapa 1): notas do cliente, eventos dos entes emulados, arquivos, avisos e downloads
+  `
+  CREATE TABLE pocs (
+    id TEXT PRIMARY KEY,
+    nome TEXT NOT NULL UNIQUE,
+    cnpj TEXT NOT NULL,
+    cnpj_raiz TEXT NOT NULL,
+    competencia TEXT NOT NULL,
+    dia TEXT NOT NULL,
+    ambiente_id TEXT REFERENCES ambientes(id) ON DELETE SET NULL,
+    limites_relaxados INTEGER NOT NULL DEFAULT 0,
+    lancamentos_por_arquivo INTEGER NOT NULL DEFAULT 5000,
+    ibs_client_id TEXT UNIQUE,
+    ibs_secret_hash TEXT,
+    ibs_habilitado_em TEXT,
+    ibs_webhook_url TEXT,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
+  CREATE TABLE poc_segredos (
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    chave TEXT NOT NULL,
+    iv BLOB NOT NULL,
+    dado BLOB NOT NULL,
+    tag BLOB NOT NULL,
+    PRIMARY KEY (poc_id, chave)
+  );
+  CREATE TABLE notas (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    chave TEXT NOT NULL,
+    modelo TEXT,
+    serie TEXT,
+    numero TEXT,
+    emissao TEXT,
+    autorizacao TEXT,
+    emit_cnpj TEXT,
+    emit_nome TEXT,
+    dest_doc TEXT,
+    dest_nome TEXT,
+    papel TEXT,
+    finalidade TEXT,
+    ref_chaves TEXT NOT NULL DEFAULT '[]',
+    origem_id TEXT REFERENCES notas(id) ON DELETE SET NULL,
+    cancelada_em TEXT,
+    cancelamento_xml TEXT,
+    v_ibs REAL NOT NULL DEFAULT 0,
+    v_ibs_uf REAL NOT NULL DEFAULT 0,
+    v_ibs_mun REAL NOT NULL DEFAULT 0,
+    v_cbs REAL NOT NULL DEFAULT 0,
+    situacao TEXT NOT NULL CHECK (situacao IN ('aceita', 'fora')),
+    motivo TEXT,
+    operacao_id INTEGER,
+    roteiro TEXT,
+    nome_arquivo TEXT,
+    xml TEXT NOT NULL,
+    xml_hash TEXT NOT NULL,
+    importada_por TEXT,
+    importada_em TEXT NOT NULL,
+    UNIQUE (poc_id, chave)
+  );
+  CREATE INDEX notas_origem ON notas (origem_id);
+  CREATE TABLE envios (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    numero INTEGER NOT NULL,
+    tipo TEXT NOT NULL CHECK (tipo IN ('manual', 'roteiro')),
+    dia TEXT NOT NULL,
+    roteiro TEXT,
+    notas TEXT NOT NULL DEFAULT '[]',
+    tipos TEXT NOT NULL DEFAULT '[]',
+    forcar INTEGER NOT NULL DEFAULT 0,
+    resumo TEXT NOT NULL DEFAULT '{}',
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    UNIQUE (poc_id, numero)
+  );
+  CREATE TABLE solicitacoes (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    ente TEXT NOT NULL CHECK (ente IN ('ibs', 'cbs')),
+    numero INTEGER NOT NULL,
+    tipo TEXT NOT NULL,
+    situacao TEXT NOT NULL,
+    dia TEXT NOT NULL,
+    data_solic TEXT NOT NULL,
+    trans_ini TEXT NOT NULL,
+    trans_fim TEXT NOT NULL,
+    validade TEXT NOT NULL,
+    qtd_oper INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL,
+    UNIQUE (poc_id, ente, numero)
+  );
+  CREATE TABLE arquivos (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    ente TEXT NOT NULL CHECK (ente IN ('ibs', 'cbs')),
+    solicitacao_id TEXT REFERENCES solicitacoes(id) ON DELETE CASCADE,
+    numero INTEGER NOT NULL,
+    parte INTEGER NOT NULL DEFAULT 1,
+    nome TEXT NOT NULL,
+    conteudo TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    tamanho INTEGER NOT NULL,
+    qtd_operacoes INTEGER NOT NULL DEFAULT 0,
+    qtd_lancamentos INTEGER NOT NULL DEFAULT 0,
+    gerado_em TEXT NOT NULL,
+    UNIQUE (poc_id, ente, nome)
+  );
+  CREATE TABLE eventos (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    nota_id TEXT NOT NULL REFERENCES notas(id) ON DELETE CASCADE,
+    nota_rel_id TEXT REFERENCES notas(id) ON DELETE SET NULL,
+    ente TEXT NOT NULL CHECK (ente IN ('ibs', 'cbs')),
+    tipo TEXT NOT NULL,
+    roteiro TEXT,
+    origem TEXT NOT NULL CHECK (origem IN ('roteiro', 'manual', 'prerequisito')),
+    envio_id TEXT REFERENCES envios(id) ON DELETE SET NULL,
+    forcado INTEGER NOT NULL DEFAULT 0,
+    dia TEXT NOT NULL,
+    ordem INTEGER NOT NULL,
+    valor REAL NOT NULL DEFAULT 0,
+    valores TEXT NOT NULL DEFAULT '{}',
+    lancamento_id INTEGER,
+    dth_lancto TEXT,
+    hash TEXT,
+    arquivo_id TEXT REFERENCES arquivos(id) ON DELETE SET NULL,
+    situacao TEXT NOT NULL,
+    motivo TEXT,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
+  CREATE INDEX eventos_nota ON eventos (nota_id, ordem);
+  CREATE INDEX eventos_fila ON eventos (poc_id, ente, situacao, dia);
+  CREATE INDEX eventos_arquivo ON eventos (arquivo_id);
+  CREATE TABLE avisos (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    ente TEXT NOT NULL CHECK (ente IN ('ibs', 'cbs')),
+    solicitacao_id TEXT REFERENCES solicitacoes(id) ON DELETE CASCADE,
+    reenvio_de TEXT,
+    url TEXT NOT NULL,
+    corpo TEXT NOT NULL,
+    tentativas INTEGER NOT NULL DEFAULT 0,
+    status INTEGER,
+    resultado TEXT NOT NULL,
+    erro TEXT,
+    duracao_ms INTEGER,
+    res_corpo TEXT,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
+  CREATE INDEX avisos_solicitacao ON avisos (solicitacao_id);
+  CREATE TABLE downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    arquivo_id TEXT NOT NULL REFERENCES arquivos(id) ON DELETE CASCADE,
+    ip TEXT,
+    agente TEXT,
+    em TEXT NOT NULL
+  );
+  CREATE INDEX downloads_arquivo ON downloads (arquivo_id);
+  CREATE TABLE chamadas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    poc_id TEXT REFERENCES pocs(id) ON DELETE CASCADE,
+    ente TEXT NOT NULL,
+    metodo TEXT NOT NULL,
+    rota TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ip TEXT,
+    agente TEXT,
+    req_corpo TEXT,
+    res_corpo TEXT,
+    duracao_ms INTEGER,
+    em TEXT NOT NULL
+  );
+  CREATE INDEX chamadas_poc ON chamadas (poc_id, id);
+  `,
 ];
 
 function migrar(): void {

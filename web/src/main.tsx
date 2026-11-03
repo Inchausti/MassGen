@@ -19,12 +19,15 @@ import { Execucoes } from './paginas/Execucoes.tsx';
 import { ExecucaoDetalhe } from './paginas/Execucao.tsx';
 import { Auditoria } from './paginas/Auditoria.tsx';
 import { Usuarios } from './paginas/Usuarios.tsx';
+import { Pocs, PocDetalhe } from './paginas/Pocs.tsx';
+import { NotaDetalhe } from './paginas/Nota.tsx';
 
 const I = (d: string) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 );
 const ICONES = {
   painel: I('M3 13h8V3H3zM13 21h8v-8h-8zM13 3v6h8V3zM3 21h8v-4H3z'),
+  pocs: I('M6 2h9l5 5v15H6zM14 2v6h6M9 13h6M9 17h6'),
   ambientes: I('M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6'),
   biblioteca: I('M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z'),
   destinos: I('M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z'),
@@ -37,22 +40,23 @@ const ICONES = {
   usuarios: I('M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a7 7 0 0 1 14 0v1M16 3.5a4 4 0 0 1 0 7M22 21v-1a7 7 0 0 0-4-6.3'),
 };
 
+// O gerador genérico (pacotes, modelos, cadastros, cenários e execuções) saiu do menu na v4 (D-MG-01): as telas
+// continuam nas rotas abaixo, para quem tiver o link, mas o app agora é o emulador da apuração assistida.
 const NAV: { para: string; rotulo: string; icone: ReactNode; grupo: string; soRoot?: boolean }[] = [
   { para: '/', rotulo: 'Painel', icone: ICONES.painel, grupo: '' },
+  { para: '/pocs', rotulo: 'POCs', icone: ICONES.pocs, grupo: 'Apuração assistida' },
   { para: '/ambientes', rotulo: 'Ambientes', icone: ICONES.ambientes, grupo: 'Configurar' },
   { para: '/destinos', rotulo: 'Integrações', icone: ICONES.destinos, grupo: 'Configurar' },
   { para: '/biblioteca', rotulo: 'Biblioteca de APIs', icone: ICONES.biblioteca, grupo: 'Configurar' },
-  { para: '/pacotes', rotulo: 'Pacotes', icone: ICONES.pacotes, grupo: 'Configurar' },
-  { para: '/modelos', rotulo: 'Modelos', icone: ICONES.modelos, grupo: 'Configurar' },
-  { para: '/cadastros', rotulo: 'Cadastros', icone: ICONES.cadastros, grupo: 'Configurar' },
-  { para: '/cenarios', rotulo: 'Cenários', icone: ICONES.cenarios, grupo: 'Executar' },
-  { para: '/execucoes', rotulo: 'Execuções', icone: ICONES.execucoes, grupo: 'Executar' },
   { para: '/auditoria', rotulo: 'Auditoria', icone: ICONES.auditoria, grupo: 'Controlar' },
   { para: '/usuarios', rotulo: 'Usuários', icone: ICONES.usuarios, grupo: 'Controlar', soRoot: true },
 ];
 
 const PAGINAS: { padrao: string; render: (p: Record<string, string>) => ReactNode; soRoot?: boolean }[] = [
   { padrao: '/', render: () => <Painel /> },
+  { padrao: '/pocs', render: () => <Pocs /> },
+  { padrao: '/pocs/:id', render: (p) => <PocDetalhe id={p.id} /> },
+  { padrao: '/pocs/:id/notas/:nota', render: (p) => <NotaDetalhe pocId={p.id} notaId={p.nota} /> },
   { padrao: '/ambientes', render: () => <Ambientes /> },
   { padrao: '/ambientes/:id', render: (p) => <AmbienteDetalhe id={p.id} /> },
   { padrao: '/biblioteca', render: () => <Biblioteca /> },
@@ -146,7 +150,7 @@ function Lateral() {
     <nav className="lateral" aria-label="Navegação principal">
       <div className="marca">
         <div className="marca-logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--sobre-destaque)" strokeWidth="2.6" strokeLinejoin="round" aria-hidden="true"><path d="M5 18V6l7 6 7-6v12" /></svg></div>
-        <div><div className="marca-nome">MassGen</div><div className="marca-sub">Gerador de massa de dados</div></div>
+        <div><div className="marca-nome">MassGen</div><div className="marca-sub">Emulador da apuração assistida</div></div>
       </div>
       {NAV.filter((n) => !n.soRoot || usuario.papel === 'root').map((n) => {
         const titulo = n.grupo && n.grupo !== grupo ? <div className="nav-titulo">{(grupo = n.grupo)}</div> : null;

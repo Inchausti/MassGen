@@ -1,8 +1,10 @@
 # MassGen
 
-Gerador de massa de dados **genérico** e interativo. Você modela as entidades, gera massa coerente, envia a uma API de destino cadastrada, acompanha cada requisição e confere o resultado contra um gabarito.
+Emulador da **apuração assistida** da CBS e do IBS para as POCs do SplitHub (proposta v4.3). As notas do cliente entram no SplitHub da POC e no MassGen. O MassGen faz o papel dos entes diante do SplitHub: monta o barramento de cada nota pela documentação deles, avisa o webhook e serve os arquivos, com o histórico de cada nota. Nada chama a Receita Federal, o Comitê Gestor ou o SplitHub de produção.
 
-O núcleo não conhece nenhum domínio: entidades, regras e cenários são configuração, organizada em **pacotes**. O primeiro pacote é o do **SplitHub** (fornecedores, contratos e documentos fiscais, pelo docs da API v1.7.0).
+A etapa 1 está pronta: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10. A CBS (Receita Federal) é a etapa 2. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
+
+O gerador de massa genérico das versões anteriores continua no app, fora do menu (D-MG-01): veja [Gerador genérico](#gerador-genérico-fora-do-menu).
 
 Roda na sua máquina, sem infraestrutura: um servidor Node e um banco SQLite num arquivo. Para o time usar junto, o mesmo app roda numa VM: veja [Hospedar para o time](#hospedar-para-o-time).
 
@@ -33,7 +35,33 @@ npm run mock
 
 Ela fica em http://localhost:8089, com `client_id` **massgen** e `client_secret` **massgen-segredo**. O comprador cadastrado é o CNPJ **11222333000181**. Crie um destino com o pacote SplitHub apontando para ela e rode o cenário C-01.
 
-## Como usar
+## POC da apuração assistida
+
+Cada POC é um cliente e uma competência. O caminho, pelo menu **POCs**:
+
+1. **Nova POC:** nome, CNPJ do cliente (aceita o alfanumérico) e competência. O app mostra **uma vez** a credencial do Comitê Gestor emulado: a URL base (`<MASSGEN_URL_PUBLICA>/entes/ibs`), o `clientid` e o `clientsecret`. Ela vai para o cofre do SplitHub da POC; o MassGen guarda só o hash. Perdeu? *Barramento › Gerar credencial nova* (a anterior para de valer na hora).
+2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora, com o motivo. O CNPJ raiz diz se a nota é de entrada ou de saída. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original.
+3. **Habilitação:** o SplitHub da POC chama `POST /entes/ibs/v1/aassist/habilitar` com a credencial, a `webhookUrl` (HTTPS; `http` só em `localhost`) e o `tokenContrib`, como faria com o Comitê Gestor. A `webhookUrl` passa pela trava de domínios (`ALLOWED_DESTINATION_DOMAINS`).
+4. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A6, RT-F1 a RT-F7, os que têm IBS). A prévia mostra cada evento no dia em que vai sair. Os eventos ficam *planejados*.
+5. **Enviar eventos (sob demanda):** escolha as notas e os tipos E-IBS-01 a E-IBS-24, com o percentual nos parciais. O que falta antes entra sozinho como pré-requisito (D-MG-13); a prévia mostra o que entra e o que não cabe, com o motivo. *Executar e enviar* fecha o dia simulado na hora (D-MG-14). Só root pode **forçar** (ignorar ordem, unicidade, saldo e data) para testar a reação do SplitHub.
+6. **Relógio:** *Fechar o dia* gera o Delta do dia com os eventos planejados, avisa o webhook e passa ao dia seguinte; *Fechar até* faz isso dia a dia até a data. O relógio não volta.
+7. **Barramento:** a credencial, a habilitação, as solicitações com os arquivos (o JSON do Anexo I e o ZIP), os avisos com cada tentativa e o *Reenviar aviso*, e as chamadas que o SplitHub fez. *Baixar a collection* entrega a collection do Postman com a URL e o `clientid` da POC, sem segredo e sem scripts (D-MG-12).
+8. **Histórico da nota:** cada evento com a origem (roteiro, envio, pré-requisito), a situação (*planejado, disponível, avisado, recebido, não recebido, substituído*), o efeito nos sete campos do extrato, a linha que saiu no arquivo, o aviso e os downloads. O download do arquivo pelo SplitHub é a prova de recebimento.
+9. **Fim da POC:** *Configuração › Apagar a POC* (só root) leva as notas do cliente, os eventos, os arquivos e os avisos. A trilha de auditoria fica. Os XMLs do cliente nunca vão para o Git.
+
+### Decisões do emulador onde o MOC ainda não define
+
+Ficam declaradas na collection e valem até o Comitê Gestor publicar:
+
+- **Obter Arquivo:** `GET /v1/aassist/arquivo/{nomeArq}` (ou o `idArq`). O arquivo vem em ZIP, com o JSON do Anexo I dentro.
+- **Hash do `extrato_cc`:** SHA-1 do hash anterior concatenado ao JSON da linha, lançamento a lançamento. Na operação fatiada, o cabeçalho se repete e o hash segue acumulado.
+- **Processamento Diário:** o arquivo do dia D sai às 01:30 de D+1, com validade de 90 dias; vencido sem download, a solicitação expira e o evento fica *não recebido*.
+- **MOV:** o texto exato dos exemplos do Anexo II. As leituras nossas de base de valor (E-IBS-07, 16, 18, 20, 22 e 24) aparecem na tela de envio e na collection.
+- **Arquivo Manual** (incluir e cancelar solicitação) fica para a etapa 3; a listagem já funciona.
+
+## Gerador genérico (fora do menu)
+
+As telas do gerador de massa (*Pacotes, Modelos, Cadastros, Cenários* e *Execuções*) saíram do menu na v4 (D-MG-01), mas as rotas continuam: `/pacotes`, `/modelos`, `/cadastros`, `/cenarios` e `/execucoes`. O núcleo não conhece nenhum domínio: entidades, regras e cenários são configuração, organizada em **pacotes**. O primeiro pacote é o do **SplitHub** (fornecedores, contratos e documentos fiscais, pelo docs da API v1.7.0).
 
 1. **Ambiente e integrações** — em *Ambientes*, crie o ambiente do sistema testado (por exemplo, *SplitHub — Sandbox*). Guarde as collections e os environments em *Biblioteca de APIs* e ligue cada integração ao ambiente com o papel dela. Também dá para importar do Postman ou preencher à mão em *Integrações › Nova integração*. As credenciais vão para a aba *Segredos* (cofre). Use *Testar conexão*.
 2. **Estrutura de APIs** — cada operação ligada a uma entidade e a uma ação (`criar`, `consultar`…). O que a collection não tem vem do pacote. As divergências entre a collection e o modelo aparecem ali.
@@ -185,6 +213,7 @@ sudo -u massgen nano .env
 | `BLOCKED_DESTINATION_DOMAINS` | produção | Domínios sempre recusados. |
 | `MASSGEN_DATA_DIR` | `data` | Pasta do banco e da chave do cofre. Se mudar, mude também o `ReadWritePaths` do `massgen.service`. |
 | `MASSGEN_MASTER_KEY` | vazio | Vazio: o app cria `data/master.key`. |
+| `MASSGEN_AVISO_ESPERAS_MS` | `2000,5000` | Esperas entre as tentativas do aviso ao webhook do SplitHub da POC. Com o padrão, são três tentativas. |
 
 ### 5. Subir como serviço (systemd)
 
@@ -256,6 +285,8 @@ O login do app já protege o MassGen. O Access acrescenta uma barreira antes del
 3. Descomente o bloco `originRequest` em `/etc/cloudflared/config.yml`, cole o *AUD tag* e reinicie o `cloudflared`.
 4. Para o e-mail do Access valer como login do app, ligue `MASSGEN_CONFIAR_CLOUDFLARE_ACCESS=true` e reinicie o MassGen.
 
+**As rotas dos entes emulados (`/entes/*`) não passam pelo login de ninguém:** o SplitHub da POC as chama de máquina para máquina, com o `clientid` e o `clientsecret` da POC, como chamaria o Comitê Gestor. Com o Access na frente, crie uma segunda aplicação só para o caminho `/entes/*`, com uma política *Bypass* restrita ao IP de saída do SplitHub da POC (ou um *Service Token* que ele envie). Nunca *Everyone*. A interface e o `/api` continuam atrás da política *Allow*.
+
 ### 9. Backup e restauração
 
 O `deploy/backup.sh` grava um `.tar.gz` com:
@@ -311,9 +342,11 @@ O backup antes da atualização é a garantia de volta. As migrações do banco 
 
 ```
 server/
+  emulacao/    apuração assistida: leitura dos XMLs, catálogo dos 24 tipos do IBS, roteiros, motor, arquivo do Anexo I, relógio
+  entes/       rotas dos entes emulados (/entes/ibs) e a collection do Postman
   core/        núcleo genérico: geradores, regras (JSONata), geração, conferência
   engine/      envio: autenticação, limite de taxa, idempotência, retentativa, registro
-  servicos/    pacotes, destinos, modelos, cadastros, cenários, execuções, monitor
+  servicos/    POCs e notas; pacotes, destinos, modelos, cadastros, cenários, execuções, monitor
   importers/   collection e environment do Postman
   auditoria.ts trilha de auditoria e cadeia de hash
   usuarios.ts  login, sessões, convites e papéis
@@ -333,6 +366,7 @@ npm test
 
 Os testes de ponta a ponta sobem o app e a API falsa e conferem:
 
+- a etapa 1 da apuração assistida, com um SplitHub falso que recebe o webhook e baixa os arquivos: a importação dos XMLs, a habilitação, o RT-A1 e o RT-F1 dia a dia, o envio sob demanda com o pré-requisito e o saldo, o forçar, o aviso que falha e o reenvio, o fatiamento com o hash acumulado, a substituição do planejado e o fim da POC;
 - o primeiro acesso do root, o convite, os papéis, a sessão vencida, a desativação e o bloqueio de login;
 - o cenário C-01 e os casos de borda do C-05;
 - a idempotência;

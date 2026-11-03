@@ -28,6 +28,17 @@ import {
 import { cancelar, estaAtiva, iniciarEnvio, pausar, reenviarRegistro, testarConexao } from './engine/executor.ts';
 import { linhaDoTempo, listarRequisicoes, obterRequisicao, painelExecucao } from './servicos/monitor.ts';
 import { pacoteDeEvidencias, trilhaDaExecucao } from './servicos/rastreabilidade.ts';
+import {
+  atualizarPoc, barramento, criarPoc, detalharAviso, detalharNota, detalharPoc, importarNotas, listarEnvios, listarNotas, listarPocs, novaCredencialIbs,
+  obterArquivo, removerPoc, xmlDaNota,
+} from './servicos/pocs.ts';
+import { CAMPOS, CATALOGO_IBS, ROTEIROS } from './emulacao/catalogo.ts';
+import { gravarEnvioManual, obterPoc, planejarEnvio } from './emulacao/execucao.ts';
+import { aplicarRoteiro, planejarRoteiro } from './emulacao/plano.ts';
+import { fecharDia } from './emulacao/relogio.ts';
+import { zipDoArquivo } from './emulacao/arquivo-ibs.ts';
+import { avisarSolicitacao } from './entes/ibs.ts';
+import { colecaoIbs } from './entes/colecao.ts';
 
 export const rotas = new Roteador();
 rotas.identificar = identificar;
@@ -430,5 +441,111 @@ rotas.post('/api/requisicoes/:id/reenviar', async ({ params, corpo }) => {
   auditar('requisicao.reenviar', `Registro reenviado ${corpo?.novaChave ? 'com chave de idempotência nova' : 'com a mesma chave'} (origem ${original.rastreio ?? `#${params.id}`})`, {
     alvoTipo: 'registro', alvoId: original.registro_id, execucaoId: original.execucao_id, detalhes: { requisicaoOrigem: Number(params.id), requisicaoNova: ultima.id, status: r.status },
   });
+  return r;
+});
+
+// ---------------------------------------------------------------- POC da apuração assistida (v4.3, etapa 1: IBS)
+rotas.get('/api/catalogo/eventos', () => ({
+  campos: CAMPOS,
+  ibs: CATALOGO_IBS.map((t) => ({ id: t.id, n: t.n, mov: t.mov, grupo: t.grupo, lado: t.lado, efeito: t.efeito, precisa: t.precisa, relacionada: t.relacionada ?? null, unico: t.unico ?? null, parcial: !!t.parcial, nota: t.nota ?? null })),
+  roteiros: ROTEIROS,
+}));
+rotas.get('/api/pocs', () => listarPocs());
+rotas.post('/api/pocs', ({ corpo, quem }) => {
+  const r = criarPoc(corpo ?? {}, quem!.usuario);
+  auditar('poc.criar', `POC ${r.poc.nome} criada (CNPJ raiz ${r.poc.cnpjRaiz}, competência ${r.poc.competencia}); credencial do IBS emulado emitida`, {
+    alvoTipo: 'poc', alvoId: r.poc.id, detalhes: { competencia: r.poc.competencia, cnpjRaiz: r.poc.cnpjRaiz, clientId: r.credencial.clientId },
+  });
+  return criado(r);
+});
+rotas.get('/api/pocs/:id', ({ params }) => detalharPoc(params.id));
+rotas.put('/api/pocs/:id', ({ params, corpo }) => {
+  const antes = detalharPoc(params.id);
+  const p = atualizarPoc(params.id, corpo ?? {});
+  auditar('poc.alterar', `POC ${p.nome} alterada`, { alvoTipo: 'poc', alvoId: p.id, detalhes: mudancas(antes as never, p as never, ['eventos', 'notas', 'ibs']) });
+  return p;
+});
+rotas.delete('/api/pocs/:id', ({ params }) => {
+  const r = removerPoc(params.id);
+  auditar('poc.remover', `POC ${r.nome} apagada com ${r.notas} nota(s) do cliente, os eventos, os arquivos e os avisos`, { alvoTipo: 'poc', alvoId: params.id, detalhes: r });
+}, SO_ROOT);
+rotas.post('/api/pocs/:id/credencial-ibs', ({ params }) => {
+  const c = novaCredencialIbs(params.id);
+  auditar('poc.credencial', `Credencial nova do IBS emulado na POC ${obterPoc(params.id).nome}; a anterior deixou de valer`, { alvoTipo: 'poc', alvoId: params.id, detalhes: { clientId: c.clientId } });
+  return c;
+});
+rotas.get('/api/pocs/:id/collection', ({ params }) => {
+  const p = obterPoc(params.id);
+  const c = colecaoIbs(detalharPoc(p.id).ibs.url, p.ibs_client_id);
+  return arquivo(JSON.stringify(c, null, 2), 'application/json; charset=utf-8', `massgen-ibs-emulado-${p.nome.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.postman_collection.json`);
+});
+
+rotas.get('/api/pocs/:id/notas', ({ params, query }) => listarNotas(params.id, { busca: txt(query.get('busca')), papel: txt(query.get('papel')), situacao: txt(query.get('situacao')) }));
+rotas.post('/api/pocs/:id/notas', ({ params, corpo, quem }) => {
+  const r = importarNotas(params.id, corpo?.arquivos, quem!.usuario);
+  auditar('poc.importar', `${r.aceitas} nota(s) aceita(s), ${r.fora} de fora, ${r.cancelamentos} cancelamento(s) e ${r.repetidas} repetida(s) na POC ${obterPoc(params.id).nome}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { aceitas: r.aceitas, fora: r.fora, cancelamentos: r.cancelamentos, repetidas: r.repetidas, ligadas: r.ligadas, arquivos: r.itens.length },
+  });
+  return criado(r);
+});
+rotas.get('/api/pocs/:id/notas/:nota', ({ params }) => detalharNota(params.id, params.nota));
+rotas.get('/api/pocs/:id/notas/:nota/xml', ({ params }) => {
+  const n = xmlDaNota(params.id, params.nota);
+  auditar('poc.xml', `XML da nota ${n.chave} baixado`, { alvoTipo: 'poc', alvoId: params.id });
+  return arquivo(n.xml, 'application/xml; charset=utf-8', `${n.chave}.xml`);
+});
+
+// Envio sob demanda (seção 09). "forçar" só para root (D-MG-13); executar fecha o dia na hora (D-MG-14).
+const forcarPermitido = (forcar: unknown, papel?: string) => {
+  if (forcar && papel !== 'root') throw new ErroHttp(403, 'Só root pode forçar a ordem e o saldo.');
+  return !!forcar;
+};
+rotas.post('/api/pocs/:id/envios/previa', ({ params, corpo, quem }) => planejarEnvio(obterPoc(params.id), corpo?.notaIds, corpo?.tipos, forcarPermitido(corpo?.forcar, quem!.papel)));
+rotas.post('/api/pocs/:id/envios', async ({ params, corpo, quem }) => {
+  const poc = obterPoc(params.id);
+  const forcar = forcarPermitido(corpo?.forcar, quem!.papel);
+  const plano = planejarEnvio(poc, corpo?.notaIds, corpo?.tipos, forcar);
+  const env = gravarEnvioManual(poc, plano, plano.itens.map((i) => i.id).filter((x, i, a) => a.indexOf(x) === i), (corpo?.notaIds ?? []).map(String), quem!.usuario);
+  auditar('poc.envio', `Envio manual nº ${env.numero} na POC ${poc.nome}: ${env.eventos.length} evento(s) do IBS no dia ${poc.dia}${forcar ? ', forçado' : ''}`, {
+    alvoTipo: 'poc', alvoId: poc.id, detalhes: { numero: env.numero, eventos: env.eventos.length, bloqueios: plano.bloqueios.length, substituidos: env.substituidos, forcar, dia: poc.dia },
+  });
+  const fechamento = await fecharDia(poc.id);
+  return criado({ envio: { id: env.id, numero: env.numero, substituidos: env.substituidos }, itens: plano.itens, bloqueios: plano.bloqueios, fechamento });
+});
+rotas.get('/api/pocs/:id/envios', ({ params }) => listarEnvios(params.id));
+rotas.post('/api/pocs/:id/roteiros/previa', ({ params, corpo }) => {
+  const r = planejarRoteiro(obterPoc(params.id), corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias ?? 1);
+  return { roteiro: r.roteiro.id, intervalo: r.intervalo, itens: r.itens, bloqueios: r.bloqueios };
+});
+rotas.post('/api/pocs/:id/roteiros', ({ params, corpo, quem }) => {
+  const poc = obterPoc(params.id);
+  const r = aplicarRoteiro(poc, corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias, quem!.usuario);
+  auditar('poc.roteiro', `${String(corpo?.roteiro)} aplicado a ${new Set(r.itens.map((i) => i.opId)).size} nota(s) da POC ${poc.nome}: ${r.itens.length} evento(s) planejado(s) até ${r.ultimoDia}`, {
+    alvoTipo: 'poc', alvoId: poc.id, detalhes: { envio: r.envio.numero, roteiro: corpo?.roteiro, eventos: r.itens.length, bloqueios: r.bloqueios.length },
+  });
+  return criado(r);
+});
+
+rotas.post('/api/pocs/:id/relogio/fechar', async ({ params, corpo }) => {
+  const antes = obterPoc(params.id).dia;
+  const r = await fecharDia(params.id, txt(corpo?.ate ?? null));
+  auditar('poc.relogio', `Relógio da POC ${obterPoc(params.id).nome} foi de ${antes} a ${r.dia}: ${r.processados.length} Delta(s) do IBS`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { de: antes, para: r.dia, deltas: r.processados.map((p) => ({ dia: p.dia, idSolic: p.idSolic, arquivos: p.arquivos.length, aviso: p.aviso?.resultado })) },
+  });
+  return r;
+});
+
+rotas.get('/api/pocs/:id/barramento', ({ params }) => barramento(params.id));
+rotas.get('/api/pocs/:id/arquivos/:arquivo', ({ params, query }) => {
+  const a = obterArquivo(params.id, params.arquivo);
+  if (query.get('baixar') === 'zip') return arquivo(zipDoArquivo(a.nome, a.conteudo, a.gerado_em), 'application/zip', a.nome);
+  return { id: a.id, idArq: a.numero, nome: a.nome, hash: a.hash, tamanho: a.tamanho, geradoEm: a.gerado_em, conteudo: JSON.parse(a.conteudo) };
+});
+rotas.get('/api/pocs/:id/avisos/:aviso', ({ params }) => detalharAviso(params.id, params.aviso));
+// "Reenviar aviso" repete o mesmo aviso e o mesmo arquivo, sem evento novo (T09).
+rotas.post('/api/pocs/:id/avisos/:aviso/reenviar', async ({ params }) => {
+  const a = detalharAviso(params.id, params.aviso);
+  const r = await avisarSolicitacao(params.id, a.solicitacaoId as string, { reenvioDe: params.aviso });
+  auditar('poc.aviso_reenviar', `Aviso ${params.aviso} reenviado ao webhook do SplitHub: ${r.resultado}${r.status ? ` (${r.status})` : ''}`, { alvoTipo: 'poc', alvoId: params.id, detalhes: r });
   return r;
 });

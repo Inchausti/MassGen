@@ -8,7 +8,7 @@ function Moldura({ titulo, sub, children }: { titulo: string; sub?: ReactNode; c
       <div className="porta-cartao">
         <div className="marca" style={{ padding: 0 }}>
           <div className="marca-logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--sobre-destaque)" strokeWidth="2.6" strokeLinejoin="round" aria-hidden="true"><path d="M5 18V6l7 6 7-6v12" /></svg></div>
-          <div><div className="marca-nome">MassGen</div><div className="marca-sub">Gerador de massa de dados</div></div>
+          <div><div className="marca-nome">MassGen</div><div className="marca-sub">Emulador da apuração assistida</div></div>
         </div>
         <div>
           <h1>{titulo}</h1>
