@@ -133,3 +133,137 @@ jobs:
       - name: Logs do serviço
         if: always()
         run: sudo journalctl -u massgen -u massgen-backup --no-pager | tail -n 200
+
+  # O mesmo, pelo instalador de um comando (deploy/instalar.sh), numa máquina limpa: a primeira instalação,
+  # a segunda vez sem mudança, a atualização com um commit novo (que troca o próprio instalador) e o túnel rápido.
+  instalador:
+    name: Instalador, Ubuntu 24.04 ${{ matrix.arquitetura }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arquitetura: x64
+          - runner: ubuntu-24.04-arm
+            arquitetura: arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck do instalador
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          shellcheck --severity=warning deploy/instalar.sh
+
+      - name: Entradas inválidas param antes de mexer na máquina
+        run: |
+          # recusa TRECHO COMANDO...: o comando precisa falhar, com o trecho na mensagem de erro.
+          recusa() {
+            local trecho=$1; shift
+            if "$@" 2>"$RUNNER_TEMP/erro.txt" </dev/null; then echo "::error::Aceitou: $*"; exit 1; fi
+            cat "$RUNNER_TEMP/erro.txt"
+            grep -qF -- "$trecho" "$RUNNER_TEMP/erro.txt"
+          }
+          recusa 'informe --roots' sudo bash deploy/instalar.sh --tunel nenhum
+          recusa 'lista de e-mails' sudo bash deploy/instalar.sh --tunel nenhum --roots nao-e-email
+          recusa 'precisa ser https://' sudo bash deploy/instalar.sh --tunel nenhum --roots ci.root@exemplo.com.br --url http://massgen.exemplo.com.br
+          recusa 'informe --url' sudo bash deploy/instalar.sh --roots ci.root@exemplo.com.br
+          recusa 'sem terminal' sudo bash deploy/instalar.sh --roots ci.root@exemplo.com.br --url https://massgen.exemplo.com.br
+          recusa 'token de túnel' sudo MASSGEN_TUNEL_TOKEN=abc bash deploy/instalar.sh --roots ci.root@exemplo.com.br --url https://massgen.exemplo.com.br
+          recusa 'opção desconhecida' sudo bash deploy/instalar.sh --xyz
+          test ! -e /opt/massgen
+          if id massgen 2>/dev/null; then echo "::error::O usuário massgen foi criado por uma entrada recusada."; exit 1; fi
+
+      - name: Repositório de origem com este commit
+        # O instalador clona como na VM, mas daqui: um repositório local, na branch main, com o conteúdo deste commit.
+        run: |
+          mkdir /tmp/origem
+          git archive HEAD | tar -x -C /tmp/origem
+          cd /tmp/origem
+          git init -q -b main
+          git add -A
+          git -c user.name=CI -c user.email=ci@exemplo.com.br commit -qm "Commit da CI"
+          chmod -R a+rX /tmp/origem
+          # O clone e o fetch rodam com o usuário massgen; a origem é do usuário da CI.
+          sudo git config --system --add safe.directory '*'
+
+      - name: Primeira instalação
+        run: |
+          sudo bash deploy/instalar.sh --repo /tmp/origem --tunel nenhum \
+            --url https://massgen.exemplo.com.br --roots ci.root@exemplo.com.br \
+            --dominios-permitidos 'webhook.exemplo.com.br,*.poc.exemplo.com.br' 2>&1 | tee "$RUNNER_TEMP/primeira.log"
+          /usr/bin/node --version | grep -E '^v(2[4-9]|[3-9][0-9])\.'
+          systemctl is-active massgen
+          test "$(systemctl show -p User --value massgen)" = massgen
+          systemctl is-enabled massgen-backup.timer
+          curl -fsS http://127.0.0.1:3000/api/saude | grep -q '"ok":true'
+          ip="$(hostname -I | awk '{print $1}')"
+          if curl -fsS --max-time 3 "http://$ip:3000/api/saude"; then echo "::error::O app respondeu em $ip, fora do 127.0.0.1."; exit 1; fi
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/destinos)" = 401
+          test "$(sudo stat -c '%a %U' /opt/massgen/.env)" = "600 massgen"
+          sudo grep -qx 'MASSGEN_HOST=127.0.0.1' /opt/massgen/.env
+          sudo grep -qx 'MASSGEN_URL_PUBLICA=https://massgen.exemplo.com.br' /opt/massgen/.env
+          sudo grep -qx 'MASSGEN_ROOTS=ci.root@exemplo.com.br' /opt/massgen/.env
+          sudo grep -qxF 'ALLOWED_DESTINATION_DOMAINS=webhook.exemplo.com.br,*.poc.exemplo.com.br' /opt/massgen/.env
+          grep -qE '^  Primeiro acesso de ci\.root@exemplo\.com\.br: https://massgen\.exemplo\.com\.br/convite/[A-Za-z0-9_-]{43}$' "$RUNNER_TEMP/primeira.log"
+          test "$(sudo find /var/backups/massgen -name 'massgen-*.tar.gz' | wc -l)" = 1
+          test "$(timedatectl show -p Timezone --value)" = America/Sao_Paulo
+          test "$(sudo -u massgen git -C /opt/massgen rev-parse HEAD)" = "$(git -C /tmp/origem rev-parse HEAD)"
+
+      - name: Segunda vez, sem mudança, não reinicia
+        run: |
+          antes="$(systemctl show -p InvocationID --value massgen)"
+          sudo bash /opt/massgen/deploy/instalar.sh 2>&1 | tee "$RUNNER_TEMP/segunda.log"
+          grep -q 'Nada mudou' "$RUNNER_TEMP/segunda.log"
+          grep -q 'Já compilado neste commit' "$RUNNER_TEMP/segunda.log"
+          test "$(systemctl show -p InvocationID --value massgen)" = "$antes"
+          test "$(sudo find /var/backups/massgen -name 'massgen-*.tar.gz' | wc -l)" = 1
+
+      - name: Commit novo na origem, que troca o instalador, atualiza com backup antes
+        run: |
+          cd /tmp/origem
+          echo '# Linha da CI: o instalador mudou.' >> deploy/instalar.sh
+          git -c user.name=CI -c user.email=ci@exemplo.com.br commit -qam "Segundo commit da CI"
+          novo="$(git rev-parse HEAD)"
+          antes="$(systemctl show -p InvocationID --value massgen)"
+          sleep 1
+          sudo bash /opt/massgen/deploy/instalar.sh 2>&1 | tee "$RUNNER_TEMP/terceira.log"
+          grep -q 'Backup antes de atualizar' "$RUNNER_TEMP/terceira.log"
+          grep -q 'O instalador do repositório é outra versão' "$RUNNER_TEMP/terceira.log"
+          grep -q 'massgen.service reiniciado' "$RUNNER_TEMP/terceira.log"
+          test "$(sudo -u massgen git -C /opt/massgen rev-parse HEAD)" = "$novo"
+          test "$(systemctl show -p InvocationID --value massgen)" != "$antes"
+          test "$(sudo find /var/backups/massgen -name 'massgen-*.tar.gz' | wc -l)" = 2
+          curl -fsS http://127.0.0.1:3000/api/saude | grep -q '"ok":true'
+
+      - name: Túnel rápido (depende do serviço público do Cloudflare)
+        continue-on-error: true
+        run: |
+          sudo bash /opt/massgen/deploy/instalar.sh --tunel rapido 2>&1 | tee "$RUNNER_TEMP/rapido.log"
+          url="$(sudo sed -n 's/^MASSGEN_URL_PUBLICA=//p' /opt/massgen/.env)"
+          echo "Endereço: $url"
+          [[ $url =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]]
+          systemctl is-active massgen-tunel-rapido
+          grep -q "$url/api/saude responde" "$RUNNER_TEMP/rapido.log"
+
+      - name: Units dos túneis (systemd-analyze verify)
+        run: |
+          if [[ ! -x /usr/bin/cloudflared ]]; then
+            sudo mkdir -p --mode=0755 /usr/share/keyrings
+            curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+            echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+            sudo apt-get update -q && sudo apt-get install -y -q cloudflared
+          fi
+          sudo cp deploy/massgen-tunel.service deploy/massgen-tunel-rapido.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          saida="$(systemd-analyze verify /etc/systemd/system/massgen-tunel.service /etc/systemd/system/massgen-tunel-rapido.service 2>&1)" || { echo "$saida"; exit 1; }
+          echo "${saida:-Nenhum aviso.}"
+          if grep -q massgen <<<"$saida"; then echo "::error::O systemd-analyze apontou problemas nas units dos túneis."; exit 1; fi
+
+      - name: Logs
+        if: always()
+        run: sudo journalctl -u massgen -u massgen-backup -u massgen-tunel-rapido --no-pager | tail -n 200

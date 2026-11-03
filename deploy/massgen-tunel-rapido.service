@@ -1,0 +1,26 @@
+# Túnel rápido do Cloudflare (Quick Tunnel), sem conta nem domínio: só para testar.
+# Instalado por deploy/instalar.sh --tunel rapido.
+# O endereço *.trycloudflare.com é sorteado a cada subida do túnel: muda quando a VM ou este serviço reiniciam.
+# Depois disso, rode o instalador de novo. Ele lê o endereço novo no journal e atualiza MASSGEN_URL_PUBLICA no .env.
+# O Cloudflare não garante disponibilidade dos túneis rápidos. Para a POC, use o túnel do painel, com um domínio.
+
+[Unit]
+Description=MassGen - túnel rápido do Cloudflare (endereço temporário)
+Documentation=https://github.com/Inchausti/MassGen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --url http://127.0.0.1:3000
+Restart=on-failure
+RestartSec=5s
+
+DynamicUser=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

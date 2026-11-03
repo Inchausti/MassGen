@@ -139,7 +139,7 @@ O endereço do app é o `MASSGEN_URL_PUBLICA`, no `.env` da VM, por exemplo `htt
 ### O que precisa
 
 - **Uma conta na Oracle Cloud (Free Tier).** O cadastro pede um cartão para confirmar a identidade, mas os recursos *Always Free* não são cobrados.
-- **Um domínio com DNS no Cloudflare.** A conta gratuita do Cloudflare serve.
+- **Um domínio com DNS no Cloudflare.** A conta gratuita do Cloudflare serve. Sem domínio, só para um teste, há o túnel rápido (veja [Instalar com um comando](#instalar-com-um-comando-passos-2-a-7)).
 - **Os e-mails dos roots**, para o `MASSGEN_ROOTS`.
 
 ### 1. Criar a VM na Oracle Cloud
@@ -166,6 +166,55 @@ O endereço do app é o `MASSGEN_URL_PUBLICA`, no `.env` da VM, por exemplo `htt
    ```
 
 A Oracle pode recuperar instâncias Always Free ociosas: CPU, rede e memória baixas por 7 dias seguidos. Contas *Pay As You Go* não passam por isso. O backup diário (passo 9) é a garantia de volta.
+
+### Instalar com um comando (passos 2 a 7)
+
+O `deploy/instalar.sh` faz os passos 2 a 7 de uma vez e, rodado de novo, atualiza (passo 10). Os passos 2 a 7, mais abaixo, são o que ele faz: servem para quem prefere fazer à mão ou precisa depurar.
+
+**Antes, no painel do Cloudflare:**
+
+1. Em **Networks › Tunnels**, crie um túnel do tipo *Cloudflared* com o nome `massgen`.
+2. Na tela de instalação do conector, copie o comando que traz o token. O instalador vai pedi-lo.
+3. Nos hostnames públicos do túnel (*Public Hostname*, ou *Published application routes*, conforme a versão do painel), aponte o domínio do app para o serviço **HTTP** `127.0.0.1:3000`. Use `127.0.0.1`, não `localhost`. É o mesmo domínio do `--url`.
+
+**Na VM**, pelo SSH do passo 1:
+
+```bash
+curl -fsSLo instalar.sh https://raw.githubusercontent.com/Inchausti/MassGen/main/deploy/instalar.sh
+sudo bash instalar.sh --url https://massgen.split.com --roots voce@empresa.com.br --dominios-permitidos webhook.poc.exemplo.com.br
+```
+
+O instalador:
+
+- confere as entradas antes de mexer na máquina;
+- pede o token do túnel, sem mostrá-lo na tela;
+- instala os pacotes e o Node 24, acerta o fuso, cria o usuário `massgen`, clona o app em `/opt/massgen` e compila a interface;
+- escreve o `.env`, com `MASSGEN_HOST=127.0.0.1`;
+- sobe o `massgen.service`, o timer do backup e o túnel;
+- faz o primeiro backup do banco e confere o endereço pela internet.
+
+No fim, ele mostra os links de primeiro acesso dos roots (passo 7).
+
+| Opção | O que faz |
+|---|---|
+| `--url` | O endereço do app, `MASSGEN_URL_PUBLICA`. É o hostname público do túnel. |
+| `--roots` | Os e-mails dos roots, separados por vírgula. |
+| `--dominios-permitidos` | `ALLOWED_DESTINATION_DOMAINS`. Ponha o domínio do webhook do SplitHub da POC: sem ele na lista, o MassGen não consegue avisá-lo. |
+| `--tunel` | `painel` (o padrão), `rapido` ou `nenhum`. Sem a opção, um túnel já instalado fica como está. |
+| `--refazer-tunel` | Troca o túnel instalado: outro modo, ou um token novo. |
+| `--ref`, `--repo`, `--fuso` | A branch (padrão `main`), a origem do clone e o fuso (padrão `America/Sao_Paulo`). |
+
+**O token do túnel** fica em `/etc/cloudflared/massgen-tunel.env`, legível só pelo root, e o `deploy/massgen-tunel.service` o lê de lá. Com o `cloudflared service install <token>` do painel, ele ficaria na linha de comando, à vista no `ps` e no `systemctl cat`.
+
+**Sem domínio, só para um teste:** use `--tunel rapido` no lugar do `--url`. O Cloudflare sorteia um endereço `*.trycloudflare.com`, que muda sempre que a VM ou o túnel reiniciam. Depois de um reinício, rode o instalador de novo: ele lê o endereço novo e atualiza o `.env`. O túnel rápido serve para conferir a instalação, não para a POC: o SplitHub da POC cadastra o endereço, e o Cloudflare não garante a disponibilidade desses túneis.
+
+A CI (`.github/workflows/verificar-implantacao.yml`, job *Instalador*) roda o instalador numa máquina limpa, em x64 e ARM, a cada push no `main`. Ela cobre:
+
+- as entradas inválidas;
+- a primeira instalação;
+- a segunda vez, sem mudança e sem reinício;
+- a atualização por um commit novo, com backup antes;
+- o túnel rápido.
 
 ### 2. Preparar a VM
 
@@ -262,7 +311,7 @@ curl -s "https://$DOMINIO/api/saude"
 
 O `echo` precisa mostrar o UUID e o domínio. Se o domínio sair vazio, o `MASSGEN_URL_PUBLICA` do `.env` não começa com `https://`. O último `curl` deve responder `{"ok":true}`, já pela internet.
 
-Prefere criar o túnel pelo painel (**Networks › Tunnels**)? O painel dá um comando `cloudflared service install <token>`. Aí o hostname público (o mesmo domínio, apontando para `http://127.0.0.1:3000`) é configurado lá, e o `config.yml` não é usado.
+Prefere criar o túnel pelo painel (**Networks › Tunnels**)? É o caminho do instalador (`--tunel painel`). O hostname público é configurado lá: o mesmo domínio, apontando para `http://127.0.0.1:3000`. Nesse caso, o `config.yml` não é usado, e a camada opcional do Access no `cloudflared` (passo 8, item 3) também é ligada no painel. À mão, sem o instalador, o painel dá um comando `cloudflared service install <token>`.
 
 ### 7. Primeiro acesso dos roots
 
@@ -327,6 +376,16 @@ Mover a pasta `data` inteira importa: um `massgen.db-wal` antigo ao lado do banc
 
 ### 10. Atualizar
 
+Com o instalador:
+
+```bash
+sudo bash /opt/massgen/deploy/instalar.sh
+```
+
+Ele faz o backup antes, puxa o `main`, recompila e só reinicia o que mudou. Se algum arquivo de `deploy/` mudou, ele o copia para o systemd. Sem opções, o `.env` e o túnel ficam como estão.
+
+À mão:
+
 ```bash
 cd /opt/massgen
 sudo systemctl start massgen-backup.service
@@ -354,7 +413,7 @@ packs/         pacotes de domínio (splithub.json)
 mock/          API falsa no estilo do SplitHub
 web/           interface (React + Vite)
 tests/         testes do núcleo e de ponta a ponta
-deploy/        systemd, backup, cloudflared e Cloudflare Access, para hospedar numa VM
+deploy/        instalador de um comando, systemd, backup, túneis do Cloudflare e Cloudflare Access, para hospedar numa VM
 .github/       verificação da implantação num Linux de verdade (x64 e ARM)
 ```
 
@@ -380,4 +439,11 @@ A cada push, o GitHub Actions ([verificar-implantacao.yml](.github/workflows/ver
 - os testes e o build;
 - o `systemd-analyze verify` nas units de `deploy/`;
 - o `backup.sh` com o app no ar e a restauração do banco;
-- o `cloudflared` instalado pelo repositório do Cloudflare, validando o `config.yml` gerado do modelo.
+- o `cloudflared` instalado pelo repositório do Cloudflare, validando o `config.yml` gerado do modelo;
+- o `deploy/instalar.sh`:
+  - o `shellcheck`;
+  - as entradas inválidas, recusadas antes de mexer na máquina;
+  - a primeira instalação;
+  - a segunda vez, sem reinício;
+  - a atualização por um commit novo, com backup antes e o próprio instalador trocado;
+  - o túnel rápido, que depende do serviço público do Cloudflare e não derruba o job.

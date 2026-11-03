@@ -1,10 +1,10 @@
-# MassGen como serviço do systemd. Instalação: veja "Hospedar para o time", no README.
+# MassGen como serviço do systemd. Instalação: deploy/instalar.sh, ou à mão, como em "Hospedar para o time", no README.
 #   sudo cp deploy/massgen.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now massgen
 # Supõe o app em /opt/massgen, o usuário massgen e o Node em /usr/bin/node (confira com: command -v node).
 
 [Unit]
-Description=MassGen - gerador de massa de dados
+Description=MassGen - emulador da apuração assistida
 Documentation=https://github.com/Inchausti/MassGen
 After=network-online.target
 Wants=network-online.target
