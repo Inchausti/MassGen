@@ -1,6 +1,9 @@
-// Collection do Comitê Gestor emulado, para o time do SplitHub (D-MG-12). É a do MOC v1.10 com a URL do MassGen;
-// o que o MOC ainda não define e o emulador precisou decidir vai declarado na descrição. Sem scripts.
+// Collections dos entes emulados, para o time do SplitHub (D-MG-12), uma por ente: a do Comitê Gestor segue o MOC v1.10;
+// a da Receita Federal, as APIs de Apuração da CBS v2. Mudam só a URL e a credencial; o que a documentação ainda não
+// define e o emulador precisou decidir vai declarado na descrição. Sem scripts.
 import { CATALOGO_IBS } from '../emulacao/catalogo.ts';
+import { CATALOGO_CBS } from '../emulacao/catalogo-cbs.ts';
+import { JANELA_DIAS, LIMITE_POR_DIA, VALIDADE_HORAS } from '../emulacao/cbs.ts';
 
 const url = (caminho: string) => ({ raw: `{{baseUrl}}${caminho}`, host: ['{{baseUrl}}'], path: caminho.split('/').filter(Boolean) });
 const json = (o: unknown) => ({ mode: 'raw', raw: JSON.stringify(o, null, 2), options: { raw: { language: 'json' } } });
@@ -64,6 +67,88 @@ export function colecaoIbs(baseUrl: string, clientId: string | null) {
           }),
           url: { raw: '{{webhookUrl}}', host: ['{{webhookUrl}}'] },
           description: 'Exemplo do que o webhook do SplitHub recebe depois de cada Processamento Diário. Serve para testar o endpoint do SplitHub.',
+        },
+      },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------- Receita Federal emulada (CBS)
+
+const PROVISORIOS_CBS = [
+  `Aviso sem pedido (D-MG-03): a cada dia fechado no relógio da POC, um tíquete por endpoint que mudou, avisado na urlRetorno validada na tela da POC. A documentação só prevê o aviso do pedido.`,
+  'Códigos de erro que a documentação não traz: APURACAO-401 (token ausente ou vencido), APURACAO-404 (endpoint, tíquete ou link inexistente), APURACAO-410 (link vencido) e APURACAO-429 (limite diário). APURACAO-001 segue a documentação.',
+  `Limite: ${LIMITE_POR_DIA} solicitações por dia simulado em cada endpoint; a POC pode relaxar o limite.`,
+  `Janela: ${JANELA_DIAS} dias até o pedido, ou desde o dia 1 do mês na primeira coleta do endpoint. O documento entra pelo atualizacao, a última mudança dele.`,
+  `Link assinado: GET /download/v2/{assinatura}, sem token, válido por ${VALIDADE_HORAS} horas no relógio da POC. O reenvio do aviso repete o mesmo link. Baixar é a prova de recebimento.`,
+  'Atendimento do pedido: PENDENTE, EM_PROCESSAMENTO e CONCLUIDA em menos de um segundo; tEASegundos "1". A documentação admite até 240 minutos.',
+  'Horários: os eventos de um dia fechado entram com o atualizacao a partir das 10:00 desse dia; o arquivo do aviso sem pedido sai às 23:00.',
+  'tipo do pagamento: 1 PCONT, 2 RAD e 3 split. A enumeração não foi publicada.',
+  'Pagamento em atraso: multa de 10% e juros de 1% do principal, arredondados ao real, só para ilustrar.',
+  'numeroDARF: o formato do exemplo da documentação, com o ano, o dia do ano e a ordem do evento.',
+  'Recolhimento: vencimento no último dia do mês seguinte ao período de apuração.',
+  ...CATALOGO_CBS.filter((t) => t.nota).map((t) => `${t.id} (${t.mov}): ${t.nota}`),
+];
+
+const bearer = [{ key: 'Authorization', value: 'Bearer {{accessToken}}' }];
+const ENDPOINTS_CBS: [string, string][] = [
+  ['debitos', 'Débitos'], ['creditos', 'Créditos'], ['pagamentos', 'Pagamentos'], ['recolhimentos', 'Recolhimentos'],
+];
+
+export function colecaoCbs(baseUrl: string, clientId: string | null, cnpj8: string) {
+  return {
+    info: {
+      name: 'MassGen · Receita Federal emulada (CBS)',
+      description: [
+        'APIs de Apuração da CBS v2, servidas pelo MassGen para a POC: token OAuth 2.0, as quatro solicitações, a situação do tíquete e o link assinado.',
+        'Troque baseUrl e a credencial para usar a mesma collection contra a Receita Federal.',
+        '', 'Decisões do emulador onde a documentação ainda não define:', ...PROVISORIOS_CBS.map((p) => `- ${p}`),
+      ].join('\n'),
+      schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+    },
+    variable: [
+      { key: 'baseUrl', value: baseUrl },
+      { key: 'clientId', value: clientId ?? '' },
+      { key: 'clientSecret', value: '', description: 'Mostrado uma vez, ao criar a POC ou gerar uma credencial nova.' },
+      { key: 'accessToken', value: '', description: 'O access_token do /token; vale 3.600 segundos.' },
+      { key: 'cnpj8', value: cnpj8 },
+      { key: 'urlRetorno', value: 'https://splithub.exemplo/retorno/cbs' },
+      { key: 'tiquete', value: '' },
+      { key: 'urlAssinada', value: '' },
+    ],
+    item: [
+      {
+        name: 'Token (client credentials)',
+        request: {
+          method: 'POST', header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }],
+          body: { mode: 'urlencoded', urlencoded: [{ key: 'grant_type', value: 'client_credentials' }, { key: 'client_id', value: '{{clientId}}' }, { key: 'client_secret', value: '{{clientSecret}}' }] },
+          url: url('/token'),
+          description: 'Também aceita a credencial no cabeçalho Authorization: Basic. Copie o access_token para a variável accessToken.',
+        },
+      },
+      ...ENDPOINTS_CBS.map(([endpoint, nome]) => ({
+        name: `Solicitar ${nome}`,
+        request: {
+          method: 'POST', header: [...bearer, { key: 'Content-Type', value: 'application/json' }], body: json({ urlRetorno: '{{urlRetorno}}' }),
+          url: url(`/apuracao-cbs/v2/${endpoint}/{{cnpj8}}`),
+          description: 'A Receita Federal emulada faz um HEAD na urlRetorno antes de aceitar; sem 2xx, responde 400 APURACAO-001. Aceito, devolve 201 com o tiqueteSolicitacao e avisa a urlRetorno quando o arquivo fica pronto.',
+        },
+      })),
+      {
+        name: 'Situação da solicitação',
+        request: { method: 'GET', header: bearer, url: url('/apuracao-cbs/v2/situacao/{{tiquete}}'), description: 'PENDENTE, EM_PROCESSAMENTO, CONCLUIDA (com urlAssinada e urlAssinadaExpiraEm) ou ERRO (com codigoErro e mensagemErro).' },
+      },
+      {
+        name: 'Baixar o arquivo (link assinado)',
+        request: { method: 'GET', header: [], url: { raw: '{{urlAssinada}}', host: ['{{urlAssinada}}'] }, description: 'Sem token. Baixar é a prova de recebimento na POC.' },
+      },
+      {
+        name: 'Aviso na urlRetorno (o MassGen chama o SplitHub)',
+        request: {
+          method: 'POST', header: [{ key: 'Content-Type', value: 'application/json' }],
+          body: json({ tiqueteSolicitacao: '00000000-0000-4000-8000-000000000000', urlAssinada: `${baseUrl}/download/v2/exemplo`, urlAssinadaExpiraEm: '2026-11-17T02:00:00Z' }),
+          url: { raw: '{{urlRetorno}}', host: ['{{urlRetorno}}'] },
+          description: 'Exemplo do que a urlRetorno recebe quando o arquivo fica pronto, do pedido ou do aviso sem pedido. Com falha, o corpo traz codigoErro e mensagemErro.',
         },
       },
     ],

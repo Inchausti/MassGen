@@ -165,6 +165,8 @@ async function api<T = any>(metodo: string, rota: string, corpo?: unknown): Prom
 }
 
 const credenciais = () => ({ clientid: credencial.clientId, clientsecret: credencial.clientSecret });
+// Os roteiros e o histórico trazem os dois entes; aqui só o IBS importa (a CBS está em cbs.test.ts).
+const ibs = (x: any) => x.ente === 'ibs';
 
 // O SplitHub falso: responde ao aviso e baixa cada arquivo depois, como um consumidor assíncrono.
 function subirSplitHub(): Promise<void> {
@@ -221,11 +223,12 @@ const notas: Record<string, string> = {};
 test('POC: credencial do IBS emulado mostrada uma vez, e o lote de XMLs separa o que entra do que fica de fora', async () => {
   const r = await api('POST', '/pocs', { nome: 'POC Exemplo', cnpj: '12.345.678/0001-90', competencia: '2026-11' });
   pocId = r.poc.id;
-  credencial = r.credencial;
+  credencial = r.credenciais.find((c: any) => c.ente === 'ibs');
+  assert.deepEqual(r.credenciais.map((c: any) => c.ente), ['ibs', 'cbs'], 'as duas credenciais saem juntas, uma vez');
   assert.equal(r.poc.dia, '2026-11-01');
   assert.equal(r.poc.cnpjRaiz, '12345678');
-  assert.match(r.credencial.clientSecret, /^[\w-]{20,}$/);
-  assert.equal(JSON.stringify(await api('GET', `/pocs/${pocId}`)).includes(r.credencial.clientSecret), false, 'o segredo não volta');
+  assert.match(credencial.clientSecret, /^[\w-]{20,}$/);
+  assert.equal(JSON.stringify(await api('GET', `/pocs/${pocId}`)).includes(credencial.clientSecret), false, 'o segredo não volta');
 
   const zip = criarZip([ENTRADA, SAIDA, COMPLEMENTAR, ENTRADA_2, CANCELADA, HOMOLOGACAO, SEM_GRUPO, DE_OUTRO].map((n, i) => ({ nome: `nota${i}.xml`, dados: Buffer.from(n.xml) }))
     .concat([{ nome: 'leia-me.txt', dados: Buffer.from('oi') }]));
@@ -273,9 +276,9 @@ test('IBS emulado: credencial errada é 401; a habilitação pede HAB e webhook 
 
 test('RT-A1 e RT-F1: a entrada e a saída percorrem os roteiros, um Delta por dia, avisado e baixado pelo SplitHub', async () => {
   const a1 = await api('POST', `/pocs/${pocId}/roteiros`, { notaIds: [notas['1001']], roteiro: 'RT-A1' });
-  assert.deepEqual(a1.itens.map((i: any) => `${i.id}@${i.dia}`), ['E-IBS-01@2026-11-01', 'E-IBS-05@2026-11-02', 'E-IBS-06@2026-11-03']);
+  assert.deepEqual(a1.itens.filter(ibs).map((i: any) => `${i.id}@${i.dia}`), ['E-IBS-01@2026-11-01', 'E-IBS-05@2026-11-02', 'E-IBS-06@2026-11-03']);
   const f1 = await api('POST', `/pocs/${pocId}/roteiros`, { notaIds: [notas['2001']], roteiro: 'RT-F1' });
-  assert.deepEqual(f1.itens.map((i: any) => `${i.id}@${i.dia}`), ['E-IBS-02@2026-11-01', 'E-IBS-09@2026-11-02']);
+  assert.deepEqual(f1.itens.filter(ibs).map((i: any) => `${i.id}@${i.dia}`), ['E-IBS-02@2026-11-01', 'E-IBS-09@2026-11-02']);
   const errado = await chamar('POST', `${API}/pocs/${pocId}/roteiros`, { corpo: { notaIds: [notas['2001']], roteiro: 'RT-A1' } });
   assert.equal(errado.status, 422);
 
@@ -325,9 +328,10 @@ test('RT-A1 e RT-F1: a entrada e a saída percorrem os roteiros, um Delta por di
 
   await esperar(100);
   const nota = await api('GET', `/pocs/${pocId}/notas/${notas['1001']}`);
-  assert.deepEqual(nota.historico.map((e: any) => `${e.tipo}:${e.situacao}`), ['E-IBS-01:recebido', 'E-IBS-05:recebido', 'E-IBS-06:recebido']);
-  assert.equal(nota.historico[0].arquivo.downloads.total, 1);
-  assert.equal(nota.historico[0].arquivo.aviso.status, 200);
+  const doIbs = nota.historico.filter(ibs);
+  assert.deepEqual(doIbs.map((e: any) => `${e.tipo}:${e.situacao}`), ['E-IBS-01:recebido', 'E-IBS-05:recebido', 'E-IBS-06:recebido']);
+  assert.equal(doIbs[0].arquivo.downloads.total, 1);
+  assert.equal(doIbs[0].arquivo.aviso.status, 200);
   assert.deepEqual(Object.fromEntries(nota.saldos.map((s: any) => [s.campo, s.noEnte])), { RFDT: 0, RFAT: 0, CAP: 0, CNU: 0, CU: 1000, DEA: 0, DEX: 0 });
 
   const lista = await chamar('GET', `${ENTE}/v1/aassist/solicitacao/listar/2026-11-01&2026-11-30&todas`, { cabecalhos: credenciais() });
@@ -385,7 +389,7 @@ test('aviso sem 2xx: três tentativas, evento "não recebido"; o reenvio repete 
   assert.equal(p.aviso.resultado, 'erro');
   assert.equal(p.aviso.tentativas, 3);
   let nota = await api('GET', `/pocs/${pocId}/notas/${notas['1001']}`);
-  const ultimo = nota.historico.at(-1);
+  const ultimo = nota.historico.filter(ibs).at(-1);
   assert.equal(ultimo.tipo, 'E-IBS-05');
   assert.equal(ultimo.valor, 100);
   assert.equal(ultimo.situacao, 'nao_recebido');
@@ -401,7 +405,7 @@ test('aviso sem 2xx: três tentativas, evento "não recebido"; o reenvio repete 
   assert.equal(JSON.stringify(aviso.corpo), JSON.stringify(detalhe.corpo), 'mesmo aviso');
   await esperar(100);
   nota = await api('GET', `/pocs/${pocId}/notas/${notas['1001']}`);
-  assert.equal(nota.historico.at(-1).situacao, 'recebido');
+  assert.equal(nota.historico.filter(ibs).at(-1).situacao, 'recebido');
 });
 
 test('fatiamento real: com 1 lançamento por arquivo, a operação vem em duas partes com o hash acumulado', async () => {
@@ -445,12 +449,12 @@ test('substituição: o envio manual torna repetido o que o roteiro planejou, e 
   assert.equal(volta.status, 409, 'o relógio não volta');
   await api('POST', `/pocs/${pocId}/relogio/fechar`, { ate: '2026-11-14' });
   const rot = await api('POST', `/pocs/${pocId}/roteiros`, { notaIds: [id], roteiro: 'RT-A1', intervaloDias: 2 });
-  assert.deepEqual(rot.itens.map((i: any) => i.dia), ['2026-11-15', '2026-11-17', '2026-11-19']);
+  assert.deepEqual(rot.itens.filter(ibs).map((i: any) => i.dia), ['2026-11-15', '2026-11-17', '2026-11-19']);
   await api('POST', `/pocs/${pocId}/relogio/fechar`, { ate: '2026-11-15' });
   const man = await api('POST', `/pocs/${pocId}/envios`, { notaIds: [id], tipos: ['E-IBS-05'] });
   assert.equal(man.envio.substituidos, 1);
   const nota = await api('GET', `/pocs/${pocId}/notas/${id}`);
-  const sub = nota.historico.find((e: any) => e.situacao === 'substituido');
+  const sub = nota.historico.filter(ibs).find((e: any) => e.situacao === 'substituido');
   assert.equal(sub.tipo, 'E-IBS-05');
   assert.match(sub.motivo, /Substituído pelo envio manual nº \d+/);
   assert.equal(nota.historico.find((e: any) => e.tipo === 'E-IBS-06').situacao, 'planejado', 'a utilização continua no plano');

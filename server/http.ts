@@ -87,6 +87,8 @@ export async function lerCorpo(req: IncomingMessage, limite = 25 * 1024 * 1024):
   }
   if (!tamanho) return undefined;
   const texto = Buffer.concat(pedacos).toString('utf8');
+  // O token OAuth da CBS emulada chega como formulário, como o padrão client credentials manda.
+  if (String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/x-www-form-urlencoded')) return Object.fromEntries(new URLSearchParams(texto));
   try {
     return JSON.parse(texto);
   } catch {

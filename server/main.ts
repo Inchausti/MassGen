@@ -7,6 +7,7 @@ import './db.ts';
 import { despachar, responderJson } from './http.ts';
 import { rotas } from './rotas.ts';
 import { entes } from './entes/ibs.ts';
+import './entes/cbs.ts';
 import { garantirPacotesEmbutidos } from './servicos/pacotes.ts';
 import { marcarInterrompidas } from './servicos/execucoes.ts';
 import { auditar } from './auditoria.ts';

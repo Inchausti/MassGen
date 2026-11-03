@@ -1,6 +1,6 @@
 // Cofre de segredos: AES-256-GCM com a chave mestra do app.
 // A chave vem de MASSGEN_MASTER_KEY ou de data/master.key, criada no primeiro uso.
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { config } from './config.ts';
@@ -25,6 +25,9 @@ export function cifrar(texto: string) {
   const dado = Buffer.concat([c.update(texto, 'utf8'), c.final()]);
   return { iv, dado, tag: c.getAuthTag() };
 }
+
+// Assinatura com a chave mestra: o link assinado da CBS emulada sai sempre igual para o mesmo tíquete e não se adivinha.
+export const assinar = (texto: string): string => createHmac('sha256', chave).update(texto).digest('base64url');
 
 export function decifrar(iv: Uint8Array, dado: Uint8Array, tag: Uint8Array): string {
   const d = createDecipheriv('aes-256-gcm', chave, iv);

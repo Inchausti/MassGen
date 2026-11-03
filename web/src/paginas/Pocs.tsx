@@ -1,5 +1,6 @@
 // POC da apuração assistida (proposta v4.3): o cliente e a competência, as notas dele, o envio sob demanda,
-// o barramento do Comitê Gestor emulado (IBS) e os envios. O relógio é o dia simulado da POC.
+// o barramento dos dois entes emulados (Comitê Gestor no IBS, Receita Federal na CBS) e os envios. O relógio é o dia
+// simulado da POC.
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { baixar, del, get, post, put } from '../api.ts';
 import { Link, useRota } from '../rotas.tsx';
@@ -17,10 +18,10 @@ export const ROTULO_FINALIDADE: Record<string, string> = { normal: 'Normal', com
 
 const SITUACAO_EVENTO: Record<string, [string, string, string]> = {
   planejado: ['Planejado', 'info', 'Sai quando o relógio fechar o dia dele.'],
-  disponivel: ['Disponível', 'destaque', 'No arquivo do Delta, ainda sem aviso aceito pelo SplitHub.'],
-  avisado: ['Avisado', 'destaque', 'O webhook do SplitHub respondeu 2xx; falta o download.'],
+  disponivel: ['Disponível', 'destaque', 'No arquivo do ente (o Delta do IBS ou a base da CBS), ainda sem aviso aceito pelo SplitHub.'],
+  avisado: ['Avisado', 'destaque', 'O SplitHub respondeu 2xx ao aviso; falta o download.'],
   recebido: ['Recebido', 'ok', 'O SplitHub baixou o arquivo com este evento.'],
-  nao_recebido: ['Não recebido', 'erro', 'O aviso falhou ou o arquivo expirou sem download.'],
+  nao_recebido: ['Não recebido', 'erro', 'O aviso falhou, ou o arquivo ou o link expirou sem download.'],
   substituido: ['Substituído', '', 'Um envio manual tornou este evento repetido; ele não sai.'],
 };
 export function SeloEvento({ situacao }: { situacao: string }) {
@@ -42,27 +43,63 @@ export function SeloAviso({ a }: { a: { resultado?: string | null; status?: numb
 
 const SeloPapelNota = ({ papel }: { papel?: string | null }) => (papel ? <span className={`selo sem-ponto ${papel === 'adquirente' ? 'info' : 'destaque'}`}>{ROTULO_PAPEL_NOTA[papel]}</span> : <span className="dica">—</span>);
 
-// Efeito do evento nos sete campos do extrato, só os que mexem.
+export const ENTE: Record<string, { sigla: string; nome: string }> = {
+  ibs: { sigla: 'IBS', nome: 'Comitê Gestor emulado' },
+  cbs: { sigla: 'CBS', nome: 'Receita Federal emulada' },
+};
+export const SeloEnte = ({ ente }: { ente: string }) => <span className="selo sem-ponto mono" title={ENTE[ente]?.nome}>{ENTE[ente]?.sigla ?? ente}</span>;
+
+// Efeito do evento nos campos do ente (os sete do extrato no IBS; os da foto na CBS), só os que mexem.
 export function efeito(valores: Record<string, number> | undefined, campos: { campo: string; rotulo: string }[]): ReactNode {
   const mexe = campos.filter((c) => valores?.[c.campo]);
   if (!mexe.length) return <span className="dica">sem efeito nos saldos</span>;
   return <span className="chip-lista">{mexe.map((c) => <span key={c.campo} className="chip mono" title={c.rotulo}>{c.campo} {valores![c.campo] > 0 ? '+' : '−'}{moeda(Math.abs(valores![c.campo]))}</span>)}</span>;
 }
 
-const resumoDelta = (p: any) => `Delta ${p.idSolic} de ${diaBr(p.dia)}: ${numero(p.lancamentos)} lançamento(s) em ${p.arquivos.length} arquivo(s); aviso ${p.aviso?.resultado === 'ok' ? `aceito (${p.aviso.status})` : p.aviso?.resultado === 'sem_webhook' ? 'não enviado: o SplitHub não habilitou' : `sem 2xx${p.aviso?.status ? ` (${p.aviso.status})` : ''}`}`;
+// Na CBS, pagamento e recolhimento não mexem na foto: viram um registro no endpoint deles.
+export function efeitoDoItem(i: { ente: string; endpoint?: string; valores?: Record<string, number>; dados?: any }, catalogo: any): ReactNode {
+  if (i.ente === 'cbs' && (i.endpoint === 'pagamentos' || i.endpoint === 'recolhimentos')) {
+    const d = i.dados ?? {};
+    return <span className="dica">registro em /{i.endpoint}{d.multa || d.juros ? `, com multa de ${moeda(d.multa)} e juros de ${moeda(d.juros)}` : ''}</span>;
+  }
+  return efeito(i.valores, i.ente === 'cbs' ? catalogo?.camposCbs ?? [] : catalogo?.campos ?? []);
+}
 
-// ---------------------------------------------------------------- credencial (mostrada uma vez)
+const resumoDelta = (p: any) => `IBS, Delta ${p.idSolic} de ${diaBr(p.dia)}: ${numero(p.lancamentos)} lançamento(s) em ${p.arquivos.length} arquivo(s); aviso ${p.aviso?.resultado === 'ok' ? `aceito (${p.aviso.status})` : p.aviso?.resultado === 'sem_webhook' ? 'não enviado: o SplitHub não habilitou' : `sem 2xx${p.aviso?.status ? ` (${p.aviso.status})` : ''}`}`;
+const resumoCbs = (c: any) => {
+  const ok = c.avisos.filter((a: any) => a.resultado === 'ok').length;
+  return `CBS de ${diaBr(c.dia)}: ${numero(c.eventos)} evento(s); ${c.tiquetes.length
+    ? `aviso sem pedido em ${c.tiquetes.map((t: any) => `/${t.endpoint}`).join(', ')} (${ok} de ${c.tiquetes.length} aceito(s))`
+    : 'sem urlRetorno validada, fica para a coleta por pedido'}`;
+};
+const resumoFechamento = (f: any) => [...f.processados.map(resumoDelta), ...(f.cbs ?? []).map(resumoCbs)];
 
-function CredencialUmaVez({ cred, aoFechar, rodape }: { cred: { url: string; clientId: string; clientSecret: string }; aoFechar: () => void; rodape?: ReactNode }) {
+// ---------------------------------------------------------------- credenciais (mostradas uma vez)
+
+interface Credencial { ente: string; url: string; clientId: string; clientSecret: string }
+
+function CredencialUmaVez({ creds, aoFechar, rodape }: { creds: Credencial[]; aoFechar: () => void; rodape?: ReactNode }) {
   const avisar = useAvisos();
   const linha = (rotulo: string, valor: string) => (
     <><dt>{rotulo}</dt><dd><div className="linha-flex"><code className="quebra">{valor}</code><button className="botao pequeno" onClick={() => copiar(valor, avisar, `${rotulo} copiado.`)}>Copiar</button></div></dd></>
   );
   return (
-    <Modal titulo="Credencial do Comitê Gestor emulado" aoFechar={aoFechar} rodape={rodape ?? <button className="botao primario" onClick={aoFechar}>Já guardei</button>}>
-      <div className="alerta aviso"><div>O <strong>clientsecret</strong> aparece só agora, como no Comitê Gestor. Guarde no cofre do SplitHub da POC: o MassGen guarda só o hash.</div></div>
-      <dl className="kv">{linha('URL base', cred.url)}{linha('clientid', cred.clientId)}{linha('clientsecret', cred.clientSecret)}</dl>
-      <p className="dica">O SplitHub da POC chama essa URL com o clientid e o clientsecret nos cabeçalhos, como faria com o Comitê Gestor. Habilitar, listar e baixar ficam na aba Barramento.</p>
+    <Modal titulo={creds.length > 1 ? 'Credenciais dos entes emulados' : `Credencial do ${ENTE[creds[0].ente].nome}`} aoFechar={aoFechar} rodape={rodape ?? <button className="botao primario" onClick={aoFechar}>Já guardei</button>}>
+      <div className="alerta aviso"><div>O segredo aparece só agora, como nos entes. Guarde no cofre do SplitHub da POC: o MassGen guarda só o hash.</div></div>
+      {creds.map((c) => c.ente === 'cbs' ? (
+        <div key={c.ente} className="pilha" style={{ gap: 8 }}>
+          <h3>{ENTE.cbs.nome} (CBS)</h3>
+          <dl className="kv">{linha('URL base', c.url)}{linha('client_id', c.clientId)}{linha('client_secret', c.clientSecret)}</dl>
+          <p className="dica">O SplitHub da POC pede o token em /token (OAuth 2.0, client credentials) e chama as APIs de Apuração da CBS v2 com ele, como faria com a Receita Federal.</p>
+        </div>
+      ) : (
+        <div key={c.ente} className="pilha" style={{ gap: 8 }}>
+          <h3>{ENTE.ibs.nome} (IBS)</h3>
+          <dl className="kv">{linha('URL base', c.url)}{linha('clientid', c.clientId)}{linha('clientsecret', c.clientSecret)}</dl>
+          <p className="dica">O SplitHub da POC chama essa URL com o clientid e o clientsecret nos cabeçalhos, como faria com o Comitê Gestor.</p>
+        </div>
+      ))}
+      <p className="dica">A aba Barramento mostra as rotas de cada ente, o que o MassGen avisou e o que o SplitHub baixou.</p>
     </Modal>
   );
 }
@@ -79,7 +116,7 @@ function NovaPoc({ aoFechar }: { aoFechar: () => void }) {
     if (r) setCriada(r);
   };
   if (criada) {
-    return <CredencialUmaVez cred={criada.credencial} aoFechar={() => navegar(`/pocs/${criada.poc.id}`)} rodape={<button className="botao primario" onClick={() => navegar(`/pocs/${criada.poc.id}`)}>Já guardei, abrir a POC</button>} />;
+    return <CredencialUmaVez creds={criada.credenciais} aoFechar={() => navegar(`/pocs/${criada.poc.id}`)} rodape={<button className="botao primario" onClick={() => navegar(`/pocs/${criada.poc.id}`)}>Já guardei, abrir a POC</button>} />;
   }
   return (
     <Modal titulo="Nova POC" aoFechar={aoFechar} rodape={<><button className="botao" onClick={aoFechar}>Cancelar</button><button className="botao primario" disabled={acao.ocupado} onClick={criar}>Criar</button></>}>
@@ -101,14 +138,14 @@ export function Pocs() {
     <div className="pagina">
       <Cabecalho
         titulo="POCs da apuração assistida"
-        sub="Cada POC é um cliente e uma competência. As notas dele entram aqui e o MassGen faz o papel do Comitê Gestor diante do SplitHub da POC: monta o barramento, avisa o webhook e serve os arquivos."
+        sub="Cada POC é um cliente e uma competência. As notas dele entram aqui e o MassGen faz o papel do Comitê Gestor (IBS) e da Receita Federal (CBS) diante do SplitHub da POC: monta o barramento de cada ente, avisa e serve os arquivos."
         acoes={usuario.papel !== 'leitor' && <button className="botao primario" onClick={() => setNova(true)}>Nova POC</button>}
       />
       <CaixaErro erro={erro} />
       <Painel semPad>
-        {carregando && !dados ? <Carregando /> : !dados?.length ? <Vazio titulo="Nenhuma POC">Crie uma para importar os XMLs do cliente e emular o IBS.</Vazio> : (
+        {carregando && !dados ? <Carregando /> : !dados?.length ? <Vazio titulo="Nenhuma POC">Crie uma para importar os XMLs do cliente e emular o IBS e a CBS.</Vazio> : (
           <div className="tabela-wrap"><table className="tabela">
-            <thead><tr><th>POC</th><th>Cliente</th><th>Dia simulado</th><th className="num">Notas</th><th className="num">Eventos recebidos</th><th className="num">Pendentes</th><th>IBS</th></tr></thead>
+            <thead><tr><th>POC</th><th>Cliente</th><th>Dia simulado</th><th className="num">Notas</th><th className="num">Eventos recebidos</th><th className="num">Pendentes</th><th>IBS</th><th>CBS</th></tr></thead>
             <tbody>{dados.map((p: any) => {
               const ev = p.eventos ?? {};
               const pendentes = (ev.disponivel ?? 0) + (ev.avisado ?? 0) + (ev.nao_recebido ?? 0);
@@ -118,9 +155,10 @@ export function Pocs() {
                   <td><span className="mono">{p.cnpjRaiz}</span><div className="dica">competência {competenciaBr(p.competencia)}</div></td>
                   <td className="nowrap">{diaBr(p.dia)}</td>
                   <td className="num">{numero(p.notas.aceitas)}<div className="dica">{numero(p.notas.entrada)} entrada · {numero(p.notas.saida)} saída</div></td>
-                  <td className="num">{numero(ev.recebido)}</td>
+                  <td className="num">{numero(ev.recebido)}<div className="dica">IBS {numero(p.eventosPorEnte?.ibs?.recebido)} · CBS {numero(p.eventosPorEnte?.cbs?.recebido)}</div></td>
                   <td className="num">{pendentes ? <span style={{ color: 'var(--aviso)' }}>{numero(pendentes)}</span> : '0'}{ev.planejado ? <div className="dica">{numero(ev.planejado)} planejado(s)</div> : null}</td>
                   <td>{p.ibs.habilitado ? <span className="selo ok">Habilitado</span> : <span className="selo aviso">Sem habilitação</span>}</td>
+                  <td>{p.cbs.urlRetorno ? <span className="selo ok" title="O fechamento do dia avisa a urlRetorno sem pedido">Avisa sem pedido</span> : <span className="selo info" title="Sem urlRetorno validada: o SplitHub coleta por pedido">Só por pedido</span>}</td>
                 </tr>
               );
             })}</tbody>
@@ -144,7 +182,8 @@ function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   const fechar = async (corpo: { ate?: string }) => {
     const r = await acao.executar(() => post(`/pocs/${poc.id}/relogio/fechar`, corpo));
     if (!r) return;
-    avisar(r.processados.length ? `${r.diasFechados} dia(s) fechado(s). ${r.processados.map(resumoDelta).join(' · ')}` : `${r.diasFechados} dia(s) fechado(s), sem evento planejado. O relógio está em ${diaBr(r.dia)}.`);
+    const resumo = resumoFechamento(r);
+    avisar(resumo.length ? `${r.diasFechados} dia(s) fechado(s). ${resumo.join(' · ')}` : `${r.diasFechados} dia(s) fechado(s), sem evento planejado. O relógio está em ${diaBr(r.dia)}.`);
     setAte('');
     aoMudar();
   };
@@ -152,9 +191,10 @@ function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
     <div className="relogio" aria-label="Relógio da POC">
       <div><div className="dica">Dia simulado</div><div className="relogio-dia">{diaBr(poc.dia)}</div></div>
       {usuario.papel !== 'leitor' && <>
-        <button className="botao" disabled={acao.ocupado} onClick={() => fechar({})} title="Gera o Delta do dia com os eventos planejados, avisa o SplitHub e passa ao dia seguinte">Fechar o dia</button>
+        <button className="botao" disabled={acao.ocupado} onClick={() => fechar({})} title="Gera o Delta do IBS e muda as fotos da CBS com os eventos planejados, avisa o SplitHub e passa ao dia seguinte">Fechar o dia</button>
         <input type="date" aria-label="Fechar até" value={ate} min={poc.dia} onChange={(e) => setAte(e.target.value)} />
-        <button className="botao" disabled={acao.ocupado || !ate} onClick={() => fechar({ ate })} title="Fecha cada dia até a data, inclusive">Fechar até</button>
+        <button className="botao" disabled={acao.ocupado || !ate} onClick={() => fechar({ ate })}
+          title="Fecha cada dia até a data, inclusive. Na CBS, o link vale 48 horas no relógio: fechar muitos dias de uma vez pode vencer um link que o SplitHub ainda não baixou; a coleta por pedido recupera">Fechar até</button>
       </>}
     </div>
   );
@@ -170,20 +210,21 @@ export function PocDetalhe({ id }: { id: string }) {
   const p = poc.dados;
   if (!p) return <div className="pagina">{poc.erro ? <CaixaErro erro={poc.erro} /> : <Carregando />}</div>;
   const ev = p.eventos ?? {};
-  const total = Object.entries(ev).filter(([k]) => k !== 'substituido').reduce((s, [, n]) => s + (n as number), 0);
+  const semSubstituidos = (e: Record<string, number> = {}) => Object.entries(e).filter(([k]) => k !== 'substituido').reduce((s, [, n]) => s + n, 0);
+  const total = semSubstituidos(ev);
   const pendentes = (ev.disponivel ?? 0) + (ev.avisado ?? 0) + (ev.nao_recebido ?? 0);
   return (
     <div className="pagina">
       <Cabecalho
         migalha={<Link para="/pocs">POCs</Link>}
         titulo={p.nome}
-        sub={<>CNPJ <span className="mono">{p.cnpj}</span> · competência {competenciaBr(p.competencia)} · {p.ibs.habilitado ? <>IBS habilitado em {quando(p.ibs.habilitadoEm)}</> : 'o SplitHub ainda não habilitou o IBS emulado'}</>}
+        sub={<>CNPJ <span className="mono">{p.cnpj}</span> · competência {competenciaBr(p.competencia)} · {p.ibs.habilitado ? <>IBS habilitado em {quando(p.ibs.habilitadoEm)}</> : 'o SplitHub ainda não habilitou o IBS emulado'} · {p.cbs.urlRetorno ? 'CBS avisa sem pedido' : 'CBS só por pedido'}</>}
         acoes={<Relogio poc={p} aoMudar={mudou} />}
       />
       <div className="grade grade-4">
         <div className="painel numero"><div className="rot">Notas aceitas</div><div className="val">{numero(p.notas.aceitas)}</div><div className="det">{numero(p.notas.entrada)} entrada · {numero(p.notas.saida)} saída</div></div>
         <div className="painel numero"><div className="rot">De fora</div><div className="val">{numero(p.notas.fora)}</div><div className="det">com o motivo na lista</div></div>
-        <div className="painel numero"><div className="rot">Eventos recebidos</div><div className="val">{numero(ev.recebido)}</div><div className="det">de {numero(total)} no IBS</div></div>
+        <div className="painel numero"><div className="rot">Eventos recebidos</div><div className="val">{numero(ev.recebido)}</div><div className="det">de {numero(total)} · IBS {numero(p.eventosPorEnte?.ibs?.recebido)} de {numero(semSubstituidos(p.eventosPorEnte?.ibs))} · CBS {numero(p.eventosPorEnte?.cbs?.recebido)} de {numero(semSubstituidos(p.eventosPorEnte?.cbs))}</div></div>
         <div className="painel numero"><div className="rot">Pendentes</div><div className="val" style={pendentes ? { color: 'var(--aviso)' } : undefined}>{numero(pendentes)}</div><div className="det">{numero(ev.planejado)} planejado(s) para os próximos dias</div></div>
       </div>
       <Abas<Aba>
@@ -287,7 +328,7 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
           <div className="tabela-wrap"><table className="tabela">
             <thead><tr>
               {pode && <th><input type="checkbox" aria-label="Marcar todas as aceitas" checked={todasMarcadas} onChange={() => setMarcadas(todasMarcadas ? new Set() : new Set(aceitas.map((n: any) => n.id)))} /></th>}
-              <th>Nota</th><th>Papel</th><th>Contraparte</th><th>Emissão</th><th className="num">IBS</th><th>Eventos</th><th>Roteiro</th>
+              <th>Nota</th><th>Papel</th><th>Contraparte</th><th>Emissão</th><th className="num">IBS · CBS</th><th>Eventos</th><th>Roteiro</th>
             </tr></thead>
             <tbody>{dados.map((n: any) => {
               const contra = n.papel === 'fornecedor' ? n.destinatario : n.emitente;
@@ -304,7 +345,7 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
                   <td><SeloPapelNota papel={n.papel} /></td>
                   <td>{contra?.nome ?? '—'}<div className="dica mono">{contra?.doc ?? ''}</div></td>
                   <td className="nowrap">{diaBr(n.emissao?.slice(0, 10))}</td>
-                  <td className="num">{moeda(n.vIbs)}</td>
+                  <td className="num">{moeda(n.vIbs)}<div className="dica">CBS {moeda(n.vCbs)}</div></td>
                   <td className="nowrap">{n.eventos.total ? <>
                     {numero(n.eventos.recebidos)} de {numero(n.eventos.total)} recebido(s)
                     {n.eventos.pendentes > 0 && <div className="dica" style={{ color: 'var(--aviso)' }}>{numero(n.eventos.pendentes)} pendente(s)</div>}
@@ -322,18 +363,19 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
   );
 }
 
-function TabelaPlano({ itens, campos, comDia }: { itens: any[]; campos: any[]; comDia?: boolean }) {
+function TabelaPlano({ itens, catalogo, comDia }: { itens: any[]; catalogo: any; comDia?: boolean }) {
   return (
     <div className="tabela-wrap"><table className="tabela">
-      <thead><tr><th>Nota</th>{comDia && <th>Dia</th>}<th>Evento</th><th>Origem</th><th className="num">Valor</th><th>Efeito no extrato</th></tr></thead>
+      <thead><tr><th>Nota</th>{comDia && <th>Dia</th>}<th>Ente</th><th>Evento</th><th>Origem</th><th className="num">Valor</th><th>Efeito</th></tr></thead>
       <tbody>{itens.map((i, k) => (
         <tr key={k}>
           <td className="nowrap">{i.nota}{i.relNota && <div className="dica">com {i.relNota}</div>}</td>
           {comDia && <td className="nowrap">{diaBr(i.dia)}</td>}
+          <td><SeloEnte ente={i.ente} />{i.endpoint && <div className="dica mono">/{i.endpoint}</div>}</td>
           <td><span className="mono">{i.id}</span><div className="dica">{i.mov}</div></td>
           <td>{i.origem === 'pre-requisito' ? <span className="selo aviso sem-ponto" title="Entrou antes porque o tipo escolhido depende dele">Pré-requisito</span> : i.origem === 'roteiro' ? <span className="selo sem-ponto">Roteiro{i.pct ? ` · ${i.pct}%` : ''}</span> : <span className="selo info sem-ponto">Escolhido{i.pct ? ` · ${i.pct}%` : ''}</span>}{i.forcado && <span className="selo erro sem-ponto">Forçado</span>}</td>
           <td className="num">{moeda(i.valor)}</td>
-          <td>{efeito(i.valores, campos)}</td>
+          <td>{efeitoDoItem(i, catalogo)}</td>
         </tr>
       ))}</tbody>
     </table></div>
@@ -353,7 +395,7 @@ function Bloqueios({ lista }: { lista: any[] }) {
 function AplicarRoteiro({ poc, catalogo, notaIds, aoFechar, aoAplicar }: { poc: any; catalogo: any; notaIds: string[]; aoFechar: () => void; aoAplicar: () => void }) {
   const acao = useAcao();
   const avisar = useAvisos();
-  const roteiros = catalogo.roteiros.filter((r: any) => r.ibs.length);
+  const roteiros = catalogo.roteiros;
   const [roteiro, setRoteiro] = useState<string>(roteiros[0]?.id ?? '');
   const [intervalo, setIntervalo] = useState(1);
   const [previa, setPrevia] = useState<any>(null);
@@ -377,7 +419,7 @@ function AplicarRoteiro({ poc, catalogo, notaIds, aoFechar, aoAplicar }: { poc: 
       rodape={<><button className="botao" onClick={aoFechar}>Cancelar</button><button className="botao primario" disabled={acao.ocupado || !previa?.itens.length} onClick={aplicar}>Planejar {previa ? numero(previa.itens.length) : ''} evento(s)</button></>}>
       <CaixaErro erro={acao.erro ?? erroPrevia} />
       <div className="grade grade-2">
-        <Campo rotulo="Roteiro" ajuda={r ? `${r.historia}. IBS: ${r.ibs.map((p: any) => `${p.tipo}${p.pct ? ` (${p.pct}%)` : ''}`).join(' → ')}` : undefined}>
+        <Campo rotulo="Roteiro" ajuda={r ? [r.historia, ...(['ibs', 'cbs'] as const).filter((e) => r[e].length).map((e) => `${ENTE[e].sigla}: ${r[e].map((p: any) => `${p.tipo}${p.pct ? ` (${p.pct}%)` : ''}`).join(' → ')}`)].join('. ') : undefined}>
           <select value={roteiro} onChange={(e) => setRoteiro(e.target.value)}>
             <optgroup label="Nota de entrada">{roteiros.filter((x: any) => x.lado === 'adquirente').map((x: any) => <option key={x.id} value={x.id}>{x.id} · {x.historia}</option>)}</optgroup>
             <optgroup label="Nota de saída">{roteiros.filter((x: any) => x.lado === 'fornecedor').map((x: any) => <option key={x.id} value={x.id}>{x.id} · {x.historia}</option>)}</optgroup>
@@ -387,10 +429,10 @@ function AplicarRoteiro({ poc, catalogo, notaIds, aoFechar, aoAplicar }: { poc: 
           <input type="number" min={0} max={30} value={intervalo} onChange={(e) => setIntervalo(Number(e.target.value))} />
         </Campo>
       </div>
-      <p className="dica">Só nas notas sem evento no IBS. Os roteiros sem IBS (A7, A8, A9 e F8) entram com a CBS, na etapa 2. Se depois você enviar sob demanda um tipo que o roteiro já planejou, o planejado vira substituído.</p>
+      <p className="dica">Só nas notas sem evento nos entes do roteiro. Os dois entes partem do mesmo dia; se um deles não couber, a nota fica de fora inteira. RT-A7, RT-A8, RT-A9 e RT-F8 só têm CBS. Se depois você enviar sob demanda um tipo que o roteiro já planejou, o planejado vira substituído.</p>
       {!previa && !erroPrevia ? <Carregando texto="Montando a prévia…" /> : previa && <>
         <Bloqueios lista={previa.bloqueios} />
-        {previa.itens.length > 0 && <TabelaPlano itens={previa.itens} campos={catalogo.campos} comDia />}
+        {previa.itens.length > 0 && <TabelaPlano itens={previa.itens} catalogo={catalogo} comDia />}
       </>}
     </Modal>
   );
@@ -413,11 +455,12 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
   const root = usuario.papel === 'root';
   const leitor = usuario.papel === 'leitor';
 
-  const grupos = useMemo(() => {
+  // Os tipos por ente e, dentro de cada um, pelo grupo do catálogo.
+  const porEnte = useMemo(() => (['ibs', 'cbs'] as const).map((ente) => {
     const m = new Map<string, any[]>();
-    for (const t of catalogo.ibs) m.set(t.grupo, [...(m.get(t.grupo) ?? []), t]);
-    return [...m];
-  }, [catalogo]);
+    for (const t of catalogo[ente] ?? []) m.set(t.grupo, [...(m.get(t.grupo) ?? []), { ...t, ente }]);
+    return { ente, total: (catalogo[ente] ?? []).length, grupos: [...m] };
+  }), [catalogo]);
   const visiveis = (notas.dados ?? []).filter((n: any) => !busca || `${n.rotulo} ${n.chave} ${n.emitente?.nome ?? ''} ${n.destinatario?.nome ?? ''}`.toLowerCase().includes(busca.toLowerCase()));
   const invalidar = () => { setPrevia(null); setFeito(null); };
   const alternarNota = (id: string) => { invalidar(); setMarcadas((m) => { const n = new Set(m); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
@@ -439,8 +482,8 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
       <CaixaErro erro={acao.erro ?? notas.erro} />
       {feito && (
         <div className="alerta ok"><div className="pilha" style={{ gap: 4 }}>
-          <strong>Envio nº {feito.envio.numero}: {numero(feito.itens.length)} evento(s) do IBS{feito.envio.substituidos ? `; ${numero(feito.envio.substituidos)} planejado(s) do roteiro viraram substituídos` : ''}.</strong>
-          {feito.fechamento.processados.map((p: any) => <div key={p.idSolic}>{resumoDelta(p)}.</div>)}
+          <strong>Envio nº {feito.envio.numero}: {numero(feito.itens.filter((i: any) => i.ente === 'ibs').length)} evento(s) do IBS e {numero(feito.itens.filter((i: any) => i.ente === 'cbs').length)} da CBS{feito.envio.substituidos ? `; ${numero(feito.envio.substituidos)} planejado(s) do roteiro viraram substituídos` : ''}.</strong>
+          {resumoFechamento(feito.fechamento).map((t, k) => <div key={k}>{t}.</div>)}
           <div className="dica">O relógio passou para {diaBr(feito.fechamento.dia)}. O histórico de cada nota mostra o recebimento quando o SplitHub baixar o arquivo.</div>
         </div></div>
       )}
@@ -453,38 +496,43 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
                 <label key={n.id} className={`opcao ${marcadas.has(n.id) ? 'marcada' : ''}`}>
                   <input type="checkbox" checked={marcadas.has(n.id)} onChange={() => alternarNota(n.id)} />
                   <span className="opcao-texto"><strong>{n.rotulo}</strong> <SeloPapelNota papel={n.papel} />{n.finalidade !== 'normal' && <span className="selo sem-ponto">{ROTULO_FINALIDADE[n.finalidade]}</span>}{n.canceladaEm && <span className="selo erro sem-ponto">Cancelada</span>}
-                    <span className="dica"> IBS {moeda(n.vIbs)} · {numero(n.eventos.total)} evento(s)</span></span>
+                    <span className="dica"> IBS {moeda(n.vIbs)} · CBS {moeda(n.vCbs)} · {numero(n.eventos.total)} evento(s)</span></span>
                 </label>
               ))}</div>
             )}
           </div>
         </Painel>
-        <Painel titulo={`2. Tipos de evento do IBS (${numero(tipos.size)})`} acoes={tipos.size > 0 && <button className="botao fantasma pequeno" onClick={() => { invalidar(); setTipos(new Map()); }}>Desmarcar</button>}>
+        <Painel titulo={`2. Tipos de evento (${numero(tipos.size)})`} acoes={tipos.size > 0 && <button className="botao fantasma pequeno" onClick={() => { invalidar(); setTipos(new Map()); }}>Desmarcar</button>}>
           <div className="pilha">
-            <p className="dica">Os 24 do MOC v1.10. O que falta antes de um tipo escolhido entra sozinho, como pré-requisito. O valor sai do saldo da operação; nos parciais, informe o percentual.</p>
-            <div className="lista-rolavel">{grupos.map(([g, ts]) => (
-              <div key={g} className="pilha" style={{ gap: 4 }}>
-                <div className="rotulo">{g}</div>
-                {ts.map((t: any) => {
-                  const e = tipos.get(t.n);
-                  return (
-                    <div key={t.n} className={`opcao ${e ? 'marcada' : ''}`}>
-                      <input type="checkbox" id={`tipo-${t.n}`} checked={!!e} onChange={() => alternarTipo(t.n)} />
-                      <label htmlFor={`tipo-${t.n}`} className="opcao-texto">
-                        <span className="mono">{t.id}</span> {t.mov}
-                        <span className="dica"> · {t.lado === 'ambos' ? 'entrada e saída' : ROTULO_PAPEL_NOTA[t.lado].toLowerCase()}{t.relacionada ? ` · com a nota ${t.relacionada === 'cancelamento' ? 'cancelada' : t.relacionada === 'complementar' ? 'complementar' : 'de devolução'}` : ''}</span>
-                        {t.nota && <span className="dica" style={{ display: 'block' }}>{t.nota}</span>}
-                      </label>
-                      {e && (t.parcial || forcar) && (
-                        <span className="opcao-extra">
-                          {t.parcial && <input type="number" min={1} max={100} placeholder="100" aria-label={`Percentual de ${t.id}`} value={e.pct} onChange={(x) => ajustar(t.n, 'pct', x.target.value)} />}
-                          {t.parcial && <span className="dica">%</span>}
-                          {forcar && <input type="text" inputMode="decimal" placeholder="valor" aria-label={`Valor forçado de ${t.id}`} value={e.valor} onChange={(x) => ajustar(t.n, 'valor', x.target.value)} />}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+            <p className="dica">Os 24 do IBS (MOC v1.10) e os 26 da CBS (APIs de Apuração v2). O que falta antes de um tipo escolhido entra sozinho, como pré-requisito. O valor sai do saldo da operação no IBS e da foto do documento na CBS; nos parciais, informe o percentual.</p>
+            <div className="lista-rolavel">{porEnte.map(({ ente, total, grupos }) => (
+              <div key={ente} className="pilha" style={{ gap: 8 }}>
+                <h3>{ENTE[ente].sigla} · {ENTE[ente].nome} <span className="dica">{numero(total)} tipos</span></h3>
+                {grupos.map(([g, ts]) => (
+                  <div key={g} className="pilha" style={{ gap: 4 }}>
+                    <div className="rotulo">{g}</div>
+                    {ts.map((t: any) => {
+                      const e = tipos.get(t.id);
+                      return (
+                        <div key={t.id} className={`opcao ${e ? 'marcada' : ''}`}>
+                          <input type="checkbox" id={`tipo-${t.id}`} checked={!!e} onChange={() => alternarTipo(t.id)} />
+                          <label htmlFor={`tipo-${t.id}`} className="opcao-texto">
+                            <span className="mono">{t.id}</span> {t.mov}
+                            <span className="dica"> · {t.lado === 'ambos' ? 'entrada e saída' : ROTULO_PAPEL_NOTA[t.lado].toLowerCase()}{t.endpoint ? ` · /${t.endpoint}` : ''}{t.relacionada === 'ajuste' ? ' · com a complementar, a devolução ou o cancelamento' : t.relacionada ? ` · com a nota ${t.relacionada === 'cancelamento' ? 'cancelada' : t.relacionada === 'complementar' ? 'complementar' : 'de devolução'}` : ''}</span>
+                            {t.nota && <span className="dica" style={{ display: 'block' }}>{t.nota}</span>}
+                          </label>
+                          {e && (t.parcial || forcar) && (
+                            <span className="opcao-extra">
+                              {t.parcial && <input type="number" min={1} max={100} placeholder="100" aria-label={`Percentual de ${t.id}`} value={e.pct} onChange={(x) => ajustar(t.id, 'pct', x.target.value)} />}
+                              {t.parcial && <span className="dica">%</span>}
+                              {forcar && <input type="text" inputMode="decimal" placeholder="valor" aria-label={`Valor forçado de ${t.id}`} value={e.valor} onChange={(x) => ajustar(t.id, 'valor', x.target.value)} />}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             ))}</div>
           </div>
@@ -492,7 +540,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
       </div>
       <Painel titulo="3. Revisar e enviar">
         <div className="pilha">
-          <p>Os eventos saem com a data do relógio, <strong>{diaBr(poc.dia)}</strong>. Executar fecha esse dia na hora (D-MG-14): o Delta do dia é gerado, o SplitHub é avisado no webhook e o relógio passa ao dia seguinte.</p>
+          <p>Os eventos saem com a data do relógio, <strong>{diaBr(poc.dia)}</strong>. Executar fecha esse dia na hora (D-MG-14): no IBS, o Delta do dia é gerado e o webhook é avisado; na CBS, as fotos mudam e, com a urlRetorno validada, o SplitHub recebe o aviso sem pedido (sem ela, coleta por pedido). Depois o relógio passa ao dia seguinte.</p>
           {root && (
             <label className="check"><input type="checkbox" checked={forcar} onChange={(e) => { invalidar(); setForcar(e.target.checked); }} /> Forçar: ignora a ordem, a unicidade, o saldo e a data, para testar a reação do SplitHub a um barramento fora da regra</label>
           )}
@@ -504,7 +552,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
           </div>
           {previa && <>
             <Bloqueios lista={previa.bloqueios} />
-            {previa.itens.length ? <TabelaPlano itens={previa.itens} campos={catalogo.campos} /> : <Vazio titulo="Nada a enviar">Nenhum evento coube nas notas marcadas.</Vazio>}
+            {previa.itens.length ? <TabelaPlano itens={previa.itens} catalogo={catalogo} /> : <Vazio titulo="Nada a enviar">Nenhum evento coube nas notas marcadas.</Vazio>}
           </>}
         </div>
       </Painel>
@@ -538,21 +586,23 @@ function GavetaAviso({ pocId, avisoId, aoFechar, aoReenviar }: { pocId: string; 
     const r = await acao.executar(() => post(`/pocs/${pocId}/avisos/${avisoId}/reenviar`));
     if (r) { recarregar(true); aoReenviar(); }
   };
+  const cbs = dados?.ente === 'cbs';
   return (
-    <Gaveta titulo="Aviso ao webhook do SplitHub" sub={dados && `${quando(dados.em)}${dados.por ? ` · ${dados.por}` : ''}`} aoFechar={aoFechar}
-      acoes={usuario.papel !== 'leitor' && <button className="botao pequeno" disabled={acao.ocupado} onClick={reenviar} title="Repete o mesmo aviso, com o mesmo arquivo; nenhum evento novo">Reenviar aviso</button>}>
+    <Gaveta titulo={cbs ? 'Aviso na urlRetorno do SplitHub (CBS)' : 'Aviso ao webhook do SplitHub (IBS)'} sub={dados && `${quando(dados.em)}${dados.por ? ` · ${dados.por}` : ''}`} aoFechar={aoFechar}
+      acoes={usuario.papel !== 'leitor' && <button className="botao pequeno" disabled={acao.ocupado} onClick={reenviar} title={cbs ? 'Repete o mesmo aviso, com o mesmo tíquete e o mesmo link; nenhum evento novo' : 'Repete o mesmo aviso, com o mesmo arquivo; nenhum evento novo'}>Reenviar aviso</button>}>
       <CaixaErro erro={erro ?? acao.erro} />
       {!dados ? <Carregando /> : <>
         <dl className="kv">
           <dt>Resultado</dt><dd><SeloAviso a={dados} /></dd>
-          <dt>Webhook</dt><dd className="mono">{dados.url ?? '—'}</dd>
+          <dt>{cbs ? 'urlRetorno' : 'Webhook'}</dt><dd className="mono">{dados.url ?? '—'}</dd>
           {dados.erro && <><dt>Erro</dt><dd>{dados.erro}</dd></>}
           {dados.reenvioDe && <><dt>Reenvio de</dt><dd className="mono">{dados.reenvioDe}</dd></>}
         </dl>
         <h3>Corpo</h3>
+        {cbs && <p className="dica">O link assinado fica mascarado aqui: só o SplitHub o recebe, e baixar por ele é a prova de recebimento.</p>}
         <Json valor={dados.corpo} alturaMax={320} />
         <h3>Tentativas</h3>
-        {!dados.chamadas.length ? <p className="dica">Nenhuma: o SplitHub não habilitou o IBS emulado, então não há webhook.</p> : (
+        {!dados.chamadas.length ? <p className="dica">{cbs ? 'Nenhuma: a urlRetorno foi recusada antes do envio.' : 'Nenhuma: o SplitHub não habilitou o IBS emulado, então não há webhook.'}</p> : (
           <ul className="tempo">{dados.chamadas.map((c: any) => (
             <li key={c.id}><div>
               <div className="linha-flex"><strong>Tentativa {c.tentativa}</strong><SeloStatusHttp status={c.status} /><span className="dica">{numero(c.duracaoMs)} ms</span></div>
@@ -567,6 +617,111 @@ function GavetaAviso({ pocId, avisoId, aoFechar, aoReenviar }: { pocId: string; 
   );
 }
 
+const ESTADO_TIQUETE: Record<string, [string, string]> = { PENDENTE: ['Pendente', 'info'], EM_PROCESSAMENTO: ['Em processamento', 'info'], CONCLUIDA: ['Concluída', 'ok'], ERRO: ['Erro', 'erro'] };
+const SeloTiquete = ({ t }: { t: any }) => {
+  if (t.estado === 'CONCLUIDA' && t.expirado) return <span className="selo aviso" title={`O link venceu em ${quando(t.expiraEm)}`}>Link vencido</span>;
+  const [r, c] = ESTADO_TIQUETE[t.estado] ?? [t.estado, ''];
+  return <span className={`selo ${c}`}>{r}</span>;
+};
+const curto = (tiquete: string) => `${tiquete.slice(0, 8)}…`;
+
+function GavetaTiquete({ pocId, tiqueteId, aoFechar }: { pocId: string; tiqueteId: string; aoFechar: () => void }) {
+  const { navegar } = useRota();
+  const acao = useAcao();
+  const { dados, erro } = useCarregar(() => get(`/pocs/${pocId}/tiquetes/${tiqueteId}`), [tiqueteId]);
+  return (
+    <Gaveta titulo={dados ? <>Tíquete <span className="mono">{curto(dados.tiquete)}</span> · /{dados.endpoint}</> : 'Tíquete'}
+      sub={dados && `${dados.origem === 'pedido' ? 'Pedido do SplitHub' : 'Aviso sem pedido'} · ${quando(dados.criadoEm)}`} aoFechar={aoFechar}
+      acoes={dados?.conteudo && <button className="botao pequeno" onClick={() => acao.executar(() => baixar(`/pocs/${pocId}/tiquetes/${tiqueteId}/arquivo`))}>Baixar o JSON</button>}>
+      <CaixaErro erro={erro ?? acao.erro} />
+      {!dados ? <Carregando /> : <>
+        <dl className="kv">
+          <dt>tiqueteSolicitacao</dt><dd className="mono quebra">{dados.tiquete}</dd>
+          <dt>Estado</dt><dd><SeloTiquete t={dados} />{dados.codigoErro && <div className="dica">{dados.codigoErro}: {dados.mensagemErro}</div>}</dd>
+          {dados.janela && <><dt>Janela</dt><dd>{quando(dados.janela[0])} a {quando(dados.janela[1])}</dd></>}
+          <dt>Gerado em</dt><dd className="mono">{dados.geradoEm ?? '—'}</dd>
+          <dt>Link vale até</dt><dd className="mono">{dados.expiraEm ?? '—'}{dados.expirado && <> · <span className="selo aviso sem-ponto">vencido</span></>}</dd>
+          <dt>Download</dt><dd>{dados.downloads.total ? `${dados.downloads.total}× · primeiro ${quando(dados.downloads.primeiro)}` : 'O SplitHub ainda não baixou.'}</dd>
+          {dados.hash && <><dt>SHA-256</dt><dd className="mono quebra">{dados.hash}</dd></>}
+          {dados.tamanho !== null && <><dt>Tamanho</dt><dd>{numero(dados.tamanho)} bytes · {numero(dados.documentos)} registro(s)</dd></>}
+        </dl>
+        <h3>Eventos no arquivo</h3>
+        {!dados.eventosDoTiquete.length ? <p className="dica">Nenhum: a janela não pegou mudança.</p> : (
+          <div className="tabela-wrap"><table className="tabela">
+            <thead><tr><th>Nota</th><th>Evento</th><th>Situação</th></tr></thead>
+            <tbody>{dados.eventosDoTiquete.map((e: any) => (
+              <tr key={e.id} className="clicavel" onClick={() => navegar(`/pocs/${pocId}/notas/${e.notaId}`)}>
+                <td><Link para={`/pocs/${pocId}/notas/${e.notaId}`}>{e.nota}</Link></td>
+                <td className="mono">{e.tipo}</td>
+                <td><SeloEvento situacao={e.situacao} /></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+        <h3>Arquivo</h3>
+        <p className="dica">O JSON como saiu, no leiaute das APIs de Apuração da CBS v2. É o mesmo que o SplitHub baixa pelo link assinado; baixar por aqui não conta como recebimento.</p>
+        {dados.conteudo ? <Json valor={dados.conteudo} alturaMax={520} /> : <p className="dica">O arquivo sai quando o tíquete conclui.</p>}
+      </>}
+    </Gaveta>
+  );
+}
+
+function PainelCbs({ poc, cbs, aoMudar, aoCredencial }: { poc: any; cbs: any; aoMudar: () => void; aoCredencial: (c: Credencial) => void }) {
+  const { usuario } = useSessao();
+  const avisar = useAvisos();
+  const acao = useAcao();
+  const [url, setUrl] = useState<string>(cbs.urlRetorno ?? '');
+  const leitor = usuario.papel === 'leitor';
+  const salvar = async (valor: string) => {
+    const r = await acao.executar(() => put(`/pocs/${poc.id}/cbs/url-retorno`, { urlRetorno: valor }), valor ? 'urlRetorno validada e salva.' : 'urlRetorno removida.');
+    if (r) { setUrl(r.urlRetorno ?? ''); aoMudar(); }
+  };
+  const novaCredencial = async () => {
+    if (!confirm('Gerar uma credencial nova da CBS? A atual e os tokens dela deixam de valer na hora, e o SplitHub da POC precisa da nova para pedir token.')) return;
+    const r = await acao.executar(() => post(`/pocs/${poc.id}/credencial-cbs`));
+    if (r) { aoCredencial(r); aoMudar(); }
+  };
+  return (
+    <Painel titulo="Receita Federal emulada (CBS)" acoes={<>
+      <button className="botao pequeno" onClick={() => acao.executar(() => baixar(`/pocs/${poc.id}/collection?ente=cbs`))}>Baixar a collection</button>
+      {!leitor && <button className="botao pequeno" onClick={novaCredencial}>Gerar credencial nova</button>}
+    </>}>
+      <div className="pilha">
+        <CaixaErro erro={acao.erro} />
+        <div className="lado-a-lado">
+          <dl className="kv">
+            <dt>URL base</dt><dd><div className="linha-flex"><code className="quebra">{cbs.url}</code><button className="botao pequeno" onClick={() => copiar(cbs.url, avisar, 'URL copiada.')}>Copiar</button></div></dd>
+            <dt>client_id</dt><dd><div className="linha-flex"><code className="quebra">{cbs.clientId}</code><button className="botao pequeno" onClick={() => copiar(cbs.clientId, avisar, 'client_id copiado.')}>Copiar</button></div></dd>
+            <dt>client_secret</dt><dd className="dica">Mostrado uma vez. Perdeu? Gere uma credencial nova.</dd>
+            <dt>CNPJ base</dt><dd className="mono">{poc.cnpjRaiz}</dd>
+            <dt>Aviso sem pedido</dt><dd>{cbs.urlRetorno ? <><span className="selo ok">Ligado</span> <span className="dica">validado {quando(cbs.urlValidadaEm)}</span></> : <span className="selo info">Desligado: só por pedido</span>}</dd>
+          </dl>
+          <div className="pilha">
+            <div className="rotulo">Rotas das APIs de Apuração da CBS v2 servidas pelo MassGen</div>
+            <div className="pilha" style={{ gap: 6 }}>
+              <div><Metodo m="POST" /> <code>/token</code> <span className="dica">OAuth 2.0, client credentials</span></div>
+              <div><Metodo m="POST" /> <code>/apuracao-cbs/v2/{'{endpoint}'}/{'{cnpj8}'}</code> <span className="dica">debitos, creditos, pagamentos, recolhimentos</span></div>
+              <div><Metodo m="GET" /> <code>/apuracao-cbs/v2/situacao/{'{tiquete}'}</code></div>
+              <div><Metodo m="GET" /> <code>/download/v2/{'{assinatura}'}</code> <span className="dica">link assinado, 48 horas no relógio</span></div>
+              <div><Metodo m="POST" /> <code>urlRetorno</code> <span className="dica">o MassGen chama o SplitHub</span></div>
+            </div>
+            <p className="dica">Onde a documentação ainda não define (os códigos de erro além do APURACAO-001, o tipo do pagamento, o aviso sem pedido), a decisão do emulador vai declarada na collection.</p>
+          </div>
+        </div>
+        {!leitor && (
+          <Campo rotulo="urlRetorno do aviso sem pedido" ajuda="Com ela, cada dia fechado avisa o SplitHub de cada endpoint que mudou (D-MG-03). Validar faz o mesmo HEAD que o pedido faz; sem 2xx, nada é salvo.">
+            <div className="linha-flex">
+              <input type="url" style={{ flex: '1 1 260px' }} placeholder="https://splithub.exemplo/retorno/cbs" value={url} onChange={(e) => setUrl(e.target.value)} />
+              <button className="botao primario pequeno" disabled={acao.ocupado || !url.trim()} onClick={() => salvar(url.trim())}>Validar e salvar</button>
+              {cbs.urlRetorno && <button className="botao pequeno" disabled={acao.ocupado} onClick={() => salvar('')}>Desligar</button>}
+            </div>
+          </Campo>
+        )}
+      </div>
+    </Painel>
+  );
+}
+
 function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoMudar: () => void }) {
   const { usuario } = useSessao();
   const avisar = useAvisos();
@@ -574,7 +729,8 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
   const { dados, erro, recarregar } = useCarregar(() => get(`/pocs/${poc.id}/barramento`), [poc.id, versao], 5000);
   const [arquivo, setArquivo] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
-  const [cred, setCred] = useState<any>(null);
+  const [tiquete, setTiquete] = useState<string | null>(null);
+  const [cred, setCred] = useState<Credencial | null>(null);
   const ibs = dados?.ibs ?? poc.ibs;
   const novaCredencial = async () => {
     if (!confirm('Gerar uma credencial nova? A atual deixa de valer na hora, e o SplitHub da POC precisa da nova para chamar o IBS emulado.')) return;
@@ -609,7 +765,7 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
           </div>
         </div>
       </Painel>
-      <Painel titulo="Solicitações e arquivos" semPad>
+      <Painel titulo="IBS · solicitações e arquivos" semPad>
         {!dados ? <Carregando /> : !dados.solicitacoes.length ? <Vazio titulo="Nenhum Delta ainda">Aplique um roteiro ou envie eventos e feche o dia.</Vazio> : (
           <div className="tabela-wrap"><table className="tabela">
             <thead><tr><th>idSolic</th><th>Dia</th><th>Situação</th><th className="num">Operações</th><th>Arquivos</th><th>Avisos</th></tr></thead>
@@ -631,13 +787,36 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
           </table></div>
         )}
       </Painel>
-      <Painel titulo="Chamadas recebidas do SplitHub" semPad>
-        {!dados ? <Carregando /> : !dados.chamadas.length ? <Vazio titulo="Nenhuma chamada">Quando o SplitHub da POC habilitar, listar ou baixar, a chamada aparece aqui.</Vazio> : (
+      {dados ? <PainelCbs key={dados.cbs.urlRetorno ?? ''} poc={poc} cbs={dados.cbs} aoMudar={() => { recarregar(true); aoMudar(); }} aoCredencial={setCred} /> : <Carregando />}
+      <Painel titulo="CBS · tíquetes" semPad>
+        {!dados ? <Carregando /> : !dados.tiquetes.length ? <Vazio titulo="Nenhum tíquete ainda">O SplitHub abre um pedido em /apuracao-cbs/v2; com a urlRetorno validada, cada dia fechado também abre o aviso sem pedido.</Vazio> : (
           <div className="tabela-wrap"><table className="tabela">
-            <thead><tr><th>Quando</th><th>Rota</th><th>Status</th><th>Origem</th><th className="num">Duração</th></tr></thead>
+            <thead><tr><th>Tíquete</th><th>Endpoint</th><th>Dia</th><th>Estado</th><th className="num">Registros</th><th>Link</th><th>Avisos</th></tr></thead>
+            <tbody>{dados.tiquetes.map((t: any) => (
+              <tr key={t.id} className="clicavel" onClick={() => setTiquete(t.id)}>
+                <td><button className="botao fantasma pequeno mono" onClick={(e) => { e.stopPropagation(); setTiquete(t.id); }}>{curto(t.tiquete)}</button>
+                  <div>{t.origem === 'pedido' ? <span className="selo info sem-ponto">Pedido</span> : <span className="selo sem-ponto">Sem pedido</span>}</div></td>
+                <td className="mono">/{t.endpoint}</td>
+                <td className="nowrap">{diaBr(t.dia)}{t.janela && <div className="dica">desde {diaBr(t.janela[0].slice(0, 10))}</div>}</td>
+                <td><SeloTiquete t={t} /></td>
+                <td className="num">{numero(t.documentos)}<div className="dica">{numero(t.eventos)} evento(s)</div></td>
+                <td>{t.expiraEm ? <><span className="dica">até {quando(t.expiraEm)}</span><div className="dica">{t.downloads.total ? `baixado ${numero(t.downloads.total)}×` : 'sem download'}</div></> : <span className="dica">—</span>}</td>
+                <td onClick={(e) => e.stopPropagation()}>{t.avisos.length ? t.avisos.map((a: any) => (
+                  <div key={a.id}><button className="botao fantasma pequeno" onClick={() => setAviso(a.id)}><SeloAviso a={a} /></button><span className="dica">{a.reenvioDe ? 'reenvio · ' : ''}{quando(a.em)}</span></div>
+                )) : <span className="dica">—</span>}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+      </Painel>
+      <Painel titulo="Chamadas recebidas do SplitHub" semPad>
+        {!dados ? <Carregando /> : !dados.chamadas.length ? <Vazio titulo="Nenhuma chamada">Quando o SplitHub da POC chamar um dos entes emulados, a chamada aparece aqui.</Vazio> : (
+          <div className="tabela-wrap"><table className="tabela">
+            <thead><tr><th>Quando</th><th>Ente</th><th>Rota</th><th>Status</th><th>Origem</th><th className="num">Duração</th></tr></thead>
             <tbody>{dados.chamadas.map((c: any) => (
               <tr key={c.id}>
                 <td className="nowrap">{quando(c.em)}</td>
+                <td><SeloEnte ente={c.ente} /></td>
                 <td><Metodo m={c.metodo} /> <code className="quebra">{c.rota}</code></td>
                 <td><SeloStatusHttp status={c.status} /></td>
                 <td className="mono">{c.ip ?? '—'}</td>
@@ -649,7 +828,8 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
       </Painel>
       {arquivo && <GavetaArquivo pocId={poc.id} arquivoId={arquivo} aoFechar={() => setArquivo(null)} />}
       {aviso && <GavetaAviso pocId={poc.id} avisoId={aviso} aoFechar={() => setAviso(null)} aoReenviar={() => { recarregar(true); aoMudar(); }} />}
-      {cred && <CredencialUmaVez cred={cred} aoFechar={() => setCred(null)} />}
+      {tiquete && <GavetaTiquete pocId={poc.id} tiqueteId={tiquete} aoFechar={() => setTiquete(null)} />}
+      {cred && <CredencialUmaVez creds={[cred]} aoFechar={() => setCred(null)} />}
     </div>
   );
 }
@@ -670,7 +850,7 @@ function AbaEnvios({ poc, versao }: { poc: any; versao: number }) {
               <td>{e.tipo === 'roteiro' ? <span className="selo sem-ponto mono">{e.roteiro}</span> : <span className="selo info sem-ponto">Sob demanda</span>}{e.forcar && <span className="selo erro sem-ponto">Forçado</span>}</td>
               <td className="nowrap">{diaBr(e.dia)}</td>
               <td className="num">{numero(e.notas)}</td>
-              <td className="num">{numero(e.resumo?.eventos)}{e.resumo?.bloqueios ? <div className="dica">{numero(e.resumo.bloqueios)} não couberam</div> : null}</td>
+              <td className="num">{numero(e.resumo?.eventos)}{e.resumo?.cbs !== undefined && <div className="dica">IBS {numero(e.resumo.ibs)} · CBS {numero(e.resumo.cbs)}</div>}{e.resumo?.bloqueios ? <div className="dica">{numero(e.resumo.bloqueios)} não couberam</div> : null}</td>
               <td><span className="chip-lista">{e.tipos.map((t: string) => <span key={t} className="chip mono">{t}</span>)}</span></td>
               <td>{e.por}<div className="dica">{quando(e.em)}</div></td>
             </tr>
@@ -685,10 +865,11 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   const { usuario } = useSessao();
   const { navegar } = useRota();
   const acao = useAcao();
-  const [f, setF] = useState({ nome: poc.nome, lancamentosPorArquivo: String(poc.lancamentosPorArquivo) });
+  const [f, setF] = useState({ nome: poc.nome, lancamentosPorArquivo: String(poc.lancamentosPorArquivo), limitesRelaxados: !!poc.limitesRelaxados });
   const leitor = usuario.papel === 'leitor';
   const salvar = async () => {
-    if ((await acao.executar(() => put(`/pocs/${poc.id}`, { nome: f.nome, lancamentosPorArquivo: Number(f.lancamentosPorArquivo) }), 'POC salva.')) !== undefined) aoMudar();
+    const corpo = { nome: f.nome, lancamentosPorArquivo: Number(f.lancamentosPorArquivo), limitesRelaxados: f.limitesRelaxados };
+    if ((await acao.executar(() => put(`/pocs/${poc.id}`, corpo), 'POC salva.')) !== undefined) aoMudar();
   };
   const apagar = async () => {
     const nome = prompt(`Apagar a POC leva as ${numero(poc.notas.aceitas + poc.notas.fora)} nota(s) do cliente, os eventos, os arquivos e os avisos; a trilha de auditoria fica. Para confirmar, digite o nome da POC:`);
@@ -706,6 +887,10 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
             <input type="number" min={1} max={100000} value={f.lancamentosPorArquivo} disabled={leitor} onChange={(e) => setF({ ...f, lancamentosPorArquivo: e.target.value })} />
           </Campo>
         </div>
+        <label className="check" style={{ marginTop: 10 }}>
+          <input type="checkbox" checked={f.limitesRelaxados} disabled={leitor} onChange={(e) => setF({ ...f, limitesRelaxados: e.target.checked })} />
+          Limites relaxados: a CBS emulada aceita mais de 4 pedidos por dia simulado em cada endpoint, para repetir um teste sem avançar o relógio
+        </label>
         <dl className="kv" style={{ marginTop: 14 }}>
           <dt>CNPJ</dt><dd className="mono">{poc.cnpj}</dd>
           <dt>Competência</dt><dd>{competenciaBr(poc.competencia)}</dd>
@@ -715,7 +900,7 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
       {usuario.papel === 'root' && (
         <Painel titulo="Fim da POC">
           <div className="linha-flex">
-            <p style={{ flex: '1 1 320px' }}>Ao fim da POC, apague-a: os XMLs do cliente saem com ela (D-MG-12). A credencial do IBS emulado deixa de valer na hora.</p>
+            <p style={{ flex: '1 1 320px' }}>Ao fim da POC, apague-a: os XMLs do cliente saem com ela (D-MG-12). As credenciais do IBS e da CBS emulados deixam de valer na hora.</p>
             <button className="botao perigo" disabled={acao.ocupado} onClick={apagar}>Apagar a POC</button>
           </div>
         </Painel>

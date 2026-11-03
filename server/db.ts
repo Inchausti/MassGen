@@ -476,6 +476,66 @@ const MIGRACOES: string[] = [
   );
   CREATE INDEX chamadas_poc ON chamadas (poc_id, id);
   `,
+  // 7 — Receita Federal emulada (v4.3, etapa 2: CBS): credencial OAuth, tokens, tíquetes com o arquivo e o link assinado,
+  // os eventos de cada tíquete (a janela de 8 dias faz o mesmo evento voltar em mais de um) e os downloads de cada link
+  `
+  ALTER TABLE pocs ADD COLUMN cbs_client_id TEXT;
+  ALTER TABLE pocs ADD COLUMN cbs_secret_hash TEXT;
+  ALTER TABLE pocs ADD COLUMN cbs_url_retorno TEXT;
+  ALTER TABLE pocs ADD COLUMN cbs_url_validada_em TEXT;
+  CREATE UNIQUE INDEX pocs_cbs_client ON pocs (cbs_client_id);
+  CREATE TABLE cbs_tokens (
+    token_hash TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    expira_em TEXT NOT NULL,
+    criado_em TEXT NOT NULL
+  );
+  CREATE TABLE cbs_tiquetes (
+    id TEXT PRIMARY KEY,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    tiquete TEXT NOT NULL UNIQUE,
+    endpoint TEXT NOT NULL CHECK (endpoint IN ('debitos', 'creditos', 'pagamentos', 'recolhimentos')),
+    origem TEXT NOT NULL CHECK (origem IN ('pedido', 'sem_pedido')),
+    url_retorno TEXT,
+    estado TEXT NOT NULL CHECK (estado IN ('PENDENTE', 'EM_PROCESSAMENTO', 'CONCLUIDA', 'ERRO')),
+    dia TEXT NOT NULL,
+    janela_ini TEXT,
+    janela_fim TEXT,
+    gerado_em TEXT,
+    conteudo TEXT,
+    hash TEXT,
+    tamanho INTEGER,
+    qtd_documentos INTEGER NOT NULL DEFAULT 0,
+    assinatura_hash TEXT UNIQUE,
+    expira_em TEXT,
+    codigo_erro TEXT,
+    mensagem_erro TEXT,
+    concluido_em TEXT,
+    expirado_em TEXT,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
+  CREATE INDEX cbs_tiquetes_poc ON cbs_tiquetes (poc_id, endpoint, dia);
+  CREATE TABLE cbs_tiquete_eventos (
+    tiquete_id TEXT NOT NULL REFERENCES cbs_tiquetes(id) ON DELETE CASCADE,
+    evento_id TEXT NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
+    PRIMARY KEY (tiquete_id, evento_id)
+  );
+  CREATE INDEX cbs_tiquete_eventos_evento ON cbs_tiquete_eventos (evento_id);
+  CREATE TABLE cbs_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    tiquete_id TEXT NOT NULL REFERENCES cbs_tiquetes(id) ON DELETE CASCADE,
+    ip TEXT,
+    agente TEXT,
+    em TEXT NOT NULL
+  );
+  CREATE INDEX cbs_downloads_tiquete ON cbs_downloads (tiquete_id);
+  ALTER TABLE eventos ADD COLUMN dados TEXT;
+  ALTER TABLE avisos ADD COLUMN tiquete_id TEXT REFERENCES cbs_tiquetes(id) ON DELETE CASCADE;
+  CREATE INDEX avisos_tiquete ON avisos (tiquete_id);
+  `,
 ];
 
 function migrar(): void {

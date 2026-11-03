@@ -7,11 +7,15 @@ import { ErroHttp } from '../http.ts';
 import { sha256 } from '../auditoria.ts';
 import { lerSegredoPoc } from '../cofre.ts';
 import { CAMPOS, TIPO_IBS, type Campo } from '../emulacao/catalogo.ts';
+import { CAMPOS_CBS, DERIVADOS_CBS, TIPO_CBS } from '../emulacao/catalogo-cbs.ts';
 import { linhaMoc, cabecalhoOperacao } from '../emulacao/arquivo-ibs.ts';
-import { carregarEstado, obterPoc, rotuloNota, type NotaRow, type PocRow } from '../emulacao/execucao.ts';
+import { fotoCredito, fotoDebito, registroPagamento, type DadosCbs, type EventoCbs } from '../emulacao/arquivo-cbs.ts';
+import { expirou, type TiqueteRow } from '../emulacao/cbs.ts';
+import { carregarEstado, obterPoc, rotuloNota, saldoDe, type NotaRow, type PocRow } from '../emulacao/execucao.ts';
 import { lerDocumento, raizCnpj, type CancelamentoLido, type NotaLida } from '../emulacao/xml.ts';
 import { ehZip, lerZip } from '../emulacao/zip.ts';
 import { PREFIXO_IBS, tentativasDoAviso, type ArquivoRow } from '../entes/ibs.ts';
+import { credencialCbs, tiquetesDaPoc, urlCbs } from '../entes/cbs.ts';
 
 const CNPJ = /^[0-9A-Z]{12}\d{2}$/;
 const COMPETENCIA = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -25,13 +29,16 @@ function credencial(): { clientId: string; clientSecret: string } {
 function resumo(p: PocRow) {
   const n = um<{ aceitas: number; fora: number; entrada: number; saida: number }>(
     "SELECT SUM(situacao = 'aceita') AS aceitas, SUM(situacao = 'fora') AS fora, SUM(papel = 'adquirente' AND situacao = 'aceita') AS entrada, SUM(papel = 'fornecedor' AND situacao = 'aceita') AS saida FROM notas WHERE poc_id = ?", p.id)!;
-  const ev = todos<{ situacao: string; n: number }>("SELECT situacao, COUNT(*) AS n FROM eventos WHERE poc_id = ? GROUP BY situacao", p.id);
+  const ev = todos<{ ente: string; situacao: string; n: number }>('SELECT ente, situacao, COUNT(*) AS n FROM eventos WHERE poc_id = ? GROUP BY ente, situacao', p.id);
+  const somar = (lista: typeof ev) => lista.reduce<Record<string, number>>((s, e) => ({ ...s, [e.situacao]: (s[e.situacao] ?? 0) + e.n }), {});
   return {
     id: p.id, nome: p.nome, cnpj: p.cnpj, cnpjRaiz: p.cnpj_raiz, competencia: p.competencia, dia: p.dia, ambienteId: p.ambiente_id,
     limitesRelaxados: !!p.limites_relaxados, lancamentosPorArquivo: p.lancamentos_por_arquivo, criadoPor: p.criado_por, criadoEm: p.criado_em,
     notas: { aceitas: n.aceitas ?? 0, fora: n.fora ?? 0, entrada: n.entrada ?? 0, saida: n.saida ?? 0 },
-    eventos: Object.fromEntries(ev.map((e) => [e.situacao, e.n])) as Record<string, number>,
+    eventos: somar(ev),
+    eventosPorEnte: { ibs: somar(ev.filter((e) => e.ente === 'ibs')), cbs: somar(ev.filter((e) => e.ente === 'cbs')) },
     ibs: { url: urlIbs(), clientId: p.ibs_client_id, habilitado: !!p.ibs_habilitado_em, habilitadoEm: p.ibs_habilitado_em, webhookUrl: p.ibs_webhook_url, tokenContrib: !!lerSegredoPoc(p.id, 'ibs_token_contrib') },
+    cbs: { url: urlCbs(), clientId: p.cbs_client_id, urlRetorno: p.cbs_url_retorno, urlValidadaEm: p.cbs_url_validada_em },
   };
 }
 
@@ -51,14 +58,16 @@ export function criarPoc(dados: Record<string, unknown>, usuario: string) {
   const ambienteId = typeof dados.ambienteId === 'string' && dados.ambienteId ? dados.ambienteId : null;
   if (ambienteId && !um('SELECT 1 FROM ambientes WHERE id = ?', ambienteId)) throw new ErroHttp(400, 'Ambiente não encontrado.');
   const id = novoId('poc');
-  const cred = credencial();
+  const ibs = credencial();
+  const cbs = credencialCbs();
   executar(
-    `INSERT INTO pocs (id, nome, cnpj, cnpj_raiz, competencia, dia, ambiente_id, ibs_client_id, ibs_secret_hash, criado_por, criado_em, atualizado_em)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    id, nome, cnpj, cnpj.slice(0, 8), competencia, `${competencia}-01`, ambienteId, cred.clientId, sha256(cred.clientSecret), usuario, agora(), agora(),
+    `INSERT INTO pocs (id, nome, cnpj, cnpj_raiz, competencia, dia, ambiente_id, ibs_client_id, ibs_secret_hash, cbs_client_id, cbs_secret_hash, criado_por, criado_em, atualizado_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    id, nome, cnpj, cnpj.slice(0, 8), competencia, `${competencia}-01`, ambienteId, ibs.clientId, sha256(ibs.clientSecret), cbs.clientId, sha256(cbs.clientSecret),
+    usuario, agora(), agora(),
   );
-  // O segredo aparece uma vez, como no Comitê Gestor; o app guarda só o hash (seção 14).
-  return { poc: detalharPoc(id), credencial: { ente: 'ibs', url: urlIbs(), ...cred } };
+  // Os segredos aparecem uma vez, como nos entes; o app guarda só o hash (seção 14).
+  return { poc: detalharPoc(id), credenciais: [{ ente: 'ibs', url: urlIbs(), ...ibs }, { ente: 'cbs', url: urlCbs(), ...cbs }] };
 }
 
 export function atualizarPoc(id: string, dados: Record<string, unknown>) {
@@ -78,6 +87,17 @@ export function novaCredencialIbs(id: string) {
   const cred = credencial();
   executar('UPDATE pocs SET ibs_client_id = ?, ibs_secret_hash = ?, atualizado_em = ? WHERE id = ?', cred.clientId, sha256(cred.clientSecret), agora(), id);
   return { ente: 'ibs', url: urlIbs(), ...cred };
+}
+
+// A anterior e os tokens emitidos com ela deixam de valer na hora.
+export function novaCredencialCbs(id: string) {
+  obterPoc(id);
+  const cred = credencialCbs();
+  transacao(() => {
+    executar('UPDATE pocs SET cbs_client_id = ?, cbs_secret_hash = ?, atualizado_em = ? WHERE id = ?', cred.clientId, sha256(cred.clientSecret), agora(), id);
+    executar('DELETE FROM cbs_tokens WHERE poc_id = ?', id);
+  });
+  return { ente: 'cbs', url: urlCbs(), ...cred };
 }
 
 // Apagar a POC leva as notas do cliente, os eventos, os arquivos e os avisos. A trilha de auditoria fica.
@@ -224,7 +244,66 @@ export function listarNotas(pocId: string, f: { busca?: string; papel?: string; 
 interface EventoCompleto {
   id: string; nota_id: string; nota_rel_id: string | null; ente: string; tipo: string; roteiro: string | null; origem: string; envio_id: string | null; forcado: number;
   dia: string; ordem: number; valor: number; valores: string; lancamento_id: number | null; dth_lancto: string | null; hash: string | null; arquivo_id: string | null;
-  situacao: string; motivo: string | null; criado_por: string | null; criado_em: string;
+  situacao: string; motivo: string | null; criado_por: string | null; criado_em: string; dados: string | null;
+}
+
+// Os tíquetes da CBS que levaram o evento: pedido ou aviso sem pedido, com o último aviso e os downloads do link.
+function tiquetesDoEvento(eventoId: string, dia: string) {
+  return todos<TiqueteRow & { downloads: number }>(
+    `SELECT t.*, (SELECT COUNT(*) FROM cbs_downloads d WHERE d.tiquete_id = t.id) AS downloads
+       FROM cbs_tiquete_eventos te JOIN cbs_tiquetes t ON t.id = te.tiquete_id WHERE te.evento_id = ? ORDER BY t.criado_em`, eventoId,
+  ).map((t) => {
+    const aviso = um<Record<string, unknown>>('SELECT id, status, resultado, tentativas FROM avisos WHERE tiquete_id = ? ORDER BY criado_em DESC LIMIT 1', t.id);
+    return {
+      id: t.id, tiquete: t.tiquete, endpoint: t.endpoint, origem: t.origem, estado: t.estado, geradoEm: t.gerado_em, expiraEm: t.expira_em,
+      expirado: !!t.expirado_em || expirou(t, dia), downloads: t.downloads, aviso: aviso ? { id: aviso.id, status: aviso.status, resultado: aviso.resultado, tentativas: aviso.tentativas } : null,
+    };
+  });
+}
+
+// Os saldos do documento na Receita Federal emulada: os campos da foto e os que ela traz calculados.
+function saldosDoDocumento(doc: NotaRow) {
+  const estado = carregarEstado(doc, undefined, 'cbs');
+  const comPlanejado = carregarEstado(doc, '9999-12-31', 'cbs');
+  return [...CAMPOS_CBS.map((c) => ({ ...c, derivado: false })), ...DERIVADOS_CBS.map(({ calcular: _, ...c }) => ({ ...c, derivado: true }))]
+    .map((c) => ({ campo: c.campo, nome: c.nome, rotulo: c.rotulo, derivado: c.derivado, noEnte: saldoDe(estado, c.campo), comPlanejado: saldoDe(comPlanejado, c.campo) }));
+}
+
+// CBS: cada nota é um documento. A nota mostra o documento dela, os das notas ligadas (quando é a original) e o ajuste
+// (E-CBS-D07) que ela provocou no documento original. Cada evento já fechado traz a foto como ficou depois dele.
+function historicoCbs(pocId: string, n: NotaRow, relacionadas: NotaRow[], envios: Map<string, { numero: number; tipo: string; criado_por: string; criado_em: string }>) {
+  const poc = obterPoc(pocId);
+  const docs = n.origem_id ? [n.id] : [n.id, ...relacionadas.map((r) => r.id)];
+  const evs = todos<EventoCompleto>(
+    `SELECT * FROM eventos WHERE ente = 'cbs' AND (nota_id IN (${docs.map(() => '?').join(', ')}) OR nota_rel_id = ?) ORDER BY dia, ordem`, ...docs, n.id);
+  const notasDoc = new Map<string, NotaRow>();
+  const doc = (id: string) => {
+    if (!notasDoc.has(id)) notasDoc.set(id, um<NotaRow>(`SELECT ${COLUNAS_NOTA} FROM notas WHERE id = ?`, id)!);
+    return notasDoc.get(id)!;
+  };
+  const fechados = new Map<string, EventoCbs[]>();
+  const historico = evs.map((e) => {
+    const t = TIPO_CBS.get(e.tipo);
+    const env = e.envio_id ? envios.get(e.envio_id) : undefined;
+    const d = doc(e.nota_id);
+    const dados = json<DadosCbs | null>(e.dados, null);
+    let foto: unknown = null;
+    if (e.dth_lancto && !['planejado', 'substituido'].includes(e.situacao) && t) {
+      const lista = [...(fechados.get(d.id) ?? []), { tipo: e.tipo, valores: json(e.valores, {}), dth: e.dth_lancto, dados }];
+      fechados.set(d.id, lista);
+      const ident = { chave: d.chave, modelo: d.modelo, emissao: d.emissao, finalidade: d.finalidade };
+      foto = t.endpoint === 'debitos' ? fotoDebito(ident, lista) : t.endpoint === 'creditos' ? fotoCredito(ident, lista) : registroPagamento(t.endpoint, dados ?? {});
+    }
+    return {
+      id: e.id, ente: 'cbs', tipo: t?.id ?? e.tipo, mov: t?.mov, endpoint: t?.endpoint, dia: e.dia, valor: e.valor, valores: json(e.valores, {}), situacao: e.situacao,
+      motivo: e.motivo, forcado: !!e.forcado, origem: e.origem, roteiro: e.roteiro, envio: env ? { numero: env.numero, tipo: env.tipo, por: env.criado_por, em: env.criado_em } : null,
+      relacionada: e.nota_rel_id, documento: { id: d.id, rotulo: rotuloNota(d) }, atualizacao: e.dth_lancto, dados, foto, tiquetes: tiquetesDoEvento(e.id, poc.dia),
+    };
+  });
+  const comEventos = new Set(evs.map((e) => e.nota_id));
+  const documentos = [n.id, ...docs.slice(1).filter((id) => comEventos.has(id)), ...[...comEventos].filter((id) => !docs.includes(id))]
+    .map((id) => ({ id, rotulo: rotuloNota(doc(id)), saldos: saldosDoDocumento(doc(id)) }));
+  return { historico, documentos };
 }
 
 export function detalharNota(pocId: string, notaId: string) {
@@ -232,7 +311,7 @@ export function detalharNota(pocId: string, notaId: string) {
   if (!n) throw new ErroHttp(404, 'Nota não encontrada.');
   const op = n.origem_id ? um<NotaRow>(`SELECT ${COLUNAS_NOTA} FROM notas WHERE id = ?`, n.origem_id)! : n;
   const relacionadas = todos<NotaRow>(`SELECT ${COLUNAS_NOTA} FROM notas WHERE origem_id = ? ORDER BY emissao`, op.id);
-  const evs = todos<EventoCompleto>('SELECT * FROM eventos WHERE nota_id = ? ORDER BY dia, ordem', op.id);
+  const evs = todos<EventoCompleto>("SELECT * FROM eventos WHERE nota_id = ? AND ente = 'ibs' ORDER BY dia, ordem", op.id);
   const envios = new Map(todos<{ id: string; numero: number; tipo: string; criado_por: string; criado_em: string }>(
     'SELECT id, numero, tipo, criado_por, criado_em FROM envios WHERE poc_id = ?', pocId).map((e) => [e.id, e]));
   const arquivos = new Map<string, Record<string, unknown>>();
@@ -265,11 +344,15 @@ export function detalharNota(pocId: string, notaId: string) {
   });
   const estado = carregarEstado(op);
   const comPlanejado = carregarEstado(op, '9999-12-31');
+  const cbs = historicoCbs(pocId, n, relacionadas, envios);
+  // Os dois entes no mesmo histórico, pelo dia; no mesmo dia, o IBS primeiro.
+  const juntos = [...historico, ...cbs.historico].sort((a, b) => a.dia.localeCompare(b.dia) || (a.ente === b.ente ? 0 : a.ente === 'ibs' ? -1 : 1));
   return {
     nota: notaResumo(n), operacao: notaResumo(op), relacionadas: relacionadas.map((r) => notaResumo(r)),
     cabecalhoOperacao: op.operacao_id ? cabecalhoOperacao(op as NotaRow & { operacao_id: number }) : null,
     saldos: CAMPOS.map((c) => ({ campo: c.campo, nome: c.nome, rotulo: c.rotulo, noEnte: estado.saldos[c.campo], comPlanejado: comPlanejado.saldos[c.campo] })),
-    historico,
+    documentosCbs: cbs.documentos,
+    historico: juntos,
   };
 }
 
@@ -293,8 +376,42 @@ export function barramento(pocId: string) {
       avisos: todos<Record<string, unknown>>('SELECT id, reenvio_de, status, resultado, tentativas, erro, duracao_ms, criado_por, criado_em FROM avisos WHERE solicitacao_id = ? ORDER BY criado_em', s.id as string)
         .map((a) => ({ id: a.id, reenvioDe: a.reenvio_de, status: a.status, resultado: a.resultado, tentativas: a.tentativas, erro: a.erro, duracaoMs: a.duracao_ms, por: a.criado_por, em: a.criado_em })),
     })),
+    cbs: resumo(poc).cbs,
+    tiquetes: tiquetesDaPoc(pocId).map((t) => resumoTiquete(t, poc.dia)),
     chamadas: todos<Record<string, unknown>>('SELECT id, ente, metodo, rota, status, ip, duracao_ms, em FROM chamadas WHERE poc_id = ? ORDER BY id DESC LIMIT 100', pocId)
       .map((c) => ({ id: c.id, ente: c.ente, metodo: c.metodo, rota: c.rota, status: c.status, ip: c.ip, duracaoMs: c.duracao_ms, em: c.em })),
+  };
+}
+
+function resumoTiquete(t: TiqueteRow, dia: string) {
+  const downloads = todos<{ em: string; ip: string }>('SELECT em, ip FROM cbs_downloads WHERE tiquete_id = ? ORDER BY id', t.id);
+  return {
+    id: t.id, tiquete: t.tiquete, endpoint: t.endpoint, origem: t.origem, estado: t.estado, dia: t.dia, janela: t.janela_ini ? [t.janela_ini, t.janela_fim] : null,
+    urlRetorno: t.url_retorno, geradoEm: t.gerado_em, expiraEm: t.expira_em, expirado: !!t.expirado_em || expirou(t, dia), documentos: t.qtd_documentos, tamanho: t.tamanho,
+    hash: t.hash, codigoErro: t.codigo_erro, mensagemErro: t.mensagem_erro, criadoPor: t.criado_por, criadoEm: t.criado_em,
+    eventos: um<{ n: number }>('SELECT COUNT(*) AS n FROM cbs_tiquete_eventos WHERE tiquete_id = ?', t.id)!.n,
+    downloads: { total: downloads.length, primeiro: downloads[0]?.em ?? null, ultimo: downloads[downloads.length - 1]?.em ?? null },
+    avisos: todos<Record<string, unknown>>('SELECT id, reenvio_de, status, resultado, tentativas, erro, duracao_ms, criado_por, criado_em FROM avisos WHERE tiquete_id = ? ORDER BY criado_em', t.id)
+      .map((a) => ({ id: a.id, reenvioDe: a.reenvio_de, status: a.status, resultado: a.resultado, tentativas: a.tentativas, erro: a.erro, duracaoMs: a.duracao_ms, por: a.criado_por, em: a.criado_em })),
+  };
+}
+
+export function obterTiquete(pocId: string, tiqueteId: string) {
+  const t = um<TiqueteRow>('SELECT * FROM cbs_tiquetes WHERE id = ? AND poc_id = ?', tiqueteId, pocId);
+  if (!t) throw new ErroHttp(404, 'Tíquete não encontrado.');
+  return t;
+}
+
+// O tíquete com o arquivo como saiu e as notas que ele levou. O link assinado não aparece: quem baixa é o SplitHub.
+export function detalharTiquete(pocId: string, tiqueteId: string) {
+  const poc = obterPoc(pocId);
+  const t = obterTiquete(pocId, tiqueteId);
+  const eventos = todos<{ id: string; tipo: string; situacao: string; nota_id: string; numero: string | null; modelo: string | null; chave: string }>(
+    `SELECT e.id, e.tipo, e.situacao, e.nota_id, n.numero, n.modelo, n.chave FROM cbs_tiquete_eventos te JOIN eventos e ON e.id = te.evento_id JOIN notas n ON n.id = e.nota_id
+      WHERE te.tiquete_id = ? ORDER BY e.dth_lancto, e.ordem`, t.id);
+  return {
+    ...resumoTiquete(t, poc.dia), conteudo: t.conteudo ? json(t.conteudo, null) : null,
+    eventosDoTiquete: eventos.map((e) => ({ id: e.id, tipo: TIPO_CBS.get(e.tipo)?.id ?? e.tipo, situacao: e.situacao, notaId: e.nota_id, nota: rotuloNota(e) })),
   };
 }
 
@@ -309,7 +426,7 @@ export function detalharAviso(pocId: string, avisoId: string) {
   if (!a) throw new ErroHttp(404, 'Aviso não encontrado.');
   return {
     id: a.id, url: a.url, corpo: json(a.corpo, a.corpo), resultado: a.resultado, status: a.status, tentativas: a.tentativas, erro: a.erro, resposta: a.res_corpo,
-    reenvioDe: a.reenvio_de, por: a.criado_por, em: a.criado_em, solicitacaoId: a.solicitacao_id, chamadas: tentativasDoAviso(avisoId as string),
+    reenvioDe: a.reenvio_de, por: a.criado_por, em: a.criado_em, ente: a.ente, solicitacaoId: a.solicitacao_id, tiqueteId: a.tiquete_id, chamadas: tentativasDoAviso(avisoId as string),
   };
 }
 
