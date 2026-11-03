@@ -2,7 +2,7 @@
 
 Emulador da **apuração assistida** da CBS e do IBS para as POCs do SplitHub (proposta v4.3). As notas do cliente entram no SplitHub da POC e no MassGen. O MassGen faz o papel dos entes diante do SplitHub: monta o barramento de cada nota pela documentação deles, avisa o webhook e serve os arquivos, com o histórico de cada nota. Nada chama a Receita Federal, o Comitê Gestor ou o SplitHub de produção.
 
-A etapa 1 está pronta: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10. A CBS (Receita Federal) é a etapa 2. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
+Os dois entes estão prontos: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10, e a **Receita Federal emulada (CBS)**, pelas APIs de Apuração da CBS v2. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
 
 O gerador de massa genérico das versões anteriores continua no app, fora do menu (D-MG-01): veja [Gerador genérico](#gerador-genérico-fora-do-menu).
 
@@ -39,17 +39,45 @@ Ela fica em http://localhost:8089, com `client_id` **massgen** e `client_secret`
 
 Cada POC é um cliente e uma competência. O caminho, pelo menu **POCs**:
 
-1. **Nova POC:** nome, CNPJ do cliente (aceita o alfanumérico) e competência. O app mostra **uma vez** a credencial do Comitê Gestor emulado: a URL base (`<MASSGEN_URL_PUBLICA>/entes/ibs`), o `clientid` e o `clientsecret`. Ela vai para o cofre do SplitHub da POC; o MassGen guarda só o hash. Perdeu? *Barramento › Gerar credencial nova* (a anterior para de valer na hora).
-2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora, com o motivo. O CNPJ raiz diz se a nota é de entrada ou de saída. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original.
-3. **Habilitação:** o SplitHub da POC chama `POST /entes/ibs/v1/aassist/habilitar` com a credencial, a `webhookUrl` (HTTPS; `http` só em `localhost`) e o `tokenContrib`, como faria com o Comitê Gestor. A `webhookUrl` passa pela trava de domínios (`ALLOWED_DESTINATION_DOMAINS`).
-4. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A6, RT-F1 a RT-F7, os que têm IBS). A prévia mostra cada evento no dia em que vai sair. Os eventos ficam *planejados*.
-5. **Enviar eventos (sob demanda):** escolha as notas e os tipos E-IBS-01 a E-IBS-24, com o percentual nos parciais. O que falta antes entra sozinho como pré-requisito (D-MG-13); a prévia mostra o que entra e o que não cabe, com o motivo. *Executar e enviar* fecha o dia simulado na hora (D-MG-14). Só root pode **forçar** (ignorar ordem, unicidade, saldo e data) para testar a reação do SplitHub.
-6. **Relógio:** *Fechar o dia* gera o Delta do dia com os eventos planejados, avisa o webhook e passa ao dia seguinte; *Fechar até* faz isso dia a dia até a data. O relógio não volta.
-7. **Barramento:** a credencial, a habilitação, as solicitações com os arquivos (o JSON do Anexo I e o ZIP), os avisos com cada tentativa e o *Reenviar aviso*, e as chamadas que o SplitHub fez. *Baixar a collection* entrega a collection do Postman com a URL e o `clientid` da POC, sem segredo e sem scripts (D-MG-12).
-8. **Histórico da nota:** cada evento com a origem (roteiro, envio, pré-requisito), a situação (*planejado, disponível, avisado, recebido, não recebido, substituído*), o efeito nos sete campos do extrato, a linha que saiu no arquivo, o aviso e os downloads. O download do arquivo pelo SplitHub é a prova de recebimento.
-9. **Fim da POC:** *Configuração › Apagar a POC* (só root) leva as notas do cliente, os eventos, os arquivos e os avisos. A trilha de auditoria fica. Os XMLs do cliente nunca vão para o Git.
+1. **Nova POC:** nome, CNPJ do cliente (aceita o alfanumérico) e competência. O app mostra **uma vez** as duas credenciais:
+   - a do Comitê Gestor emulado: a URL base (`<MASSGEN_URL_PUBLICA>/entes/ibs`), o `clientid` e o `clientsecret`;
+   - a da Receita Federal emulada: a URL base (`<MASSGEN_URL_PUBLICA>/entes/cbs`), o `client_id` e o `client_secret`.
 
-### Decisões do emulador onde o MOC ainda não define
+   Elas vão para o cofre do SplitHub da POC; o MassGen guarda só o hash. Perdeu uma? *Barramento › Gerar credencial nova* no painel do ente (a anterior para de valer na hora).
+2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora, com o motivo. O CNPJ raiz diz se a nota é de entrada ou de saída. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original. Na CBS, cada nota é um documento.
+3. **Habilitação (IBS):** o SplitHub da POC chama `POST /entes/ibs/v1/aassist/habilitar` com a credencial, a `webhookUrl` (HTTPS; `http` só em `localhost`) e o `tokenContrib`, como faria com o Comitê Gestor. A `webhookUrl` passa pela trava de domínios (`ALLOWED_DESTINATION_DOMAINS`).
+4. **Pedido (CBS):** a CBS não tem habilitação. O SplitHub pega o token em `POST /entes/cbs/token` e pede cada endpoint (débitos, créditos, pagamentos, recolhimentos) com a `urlRetorno`, como faria com a Receita Federal. A `urlRetorno` passa pela mesma trava e pelo `HEAD`, que precisa de 2xx. A resposta é o tíquete; o MassGen atende, avisa a `urlRetorno` com o link assinado, e o SplitHub baixa o JSON por ele. Veja as [rotas](#rotas-da-receita-federal-emulada-cbs).
+5. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A9, RT-F1 a RT-F8). Os roteiros com IBS e CBS soltam os eventos dos dois entes nos mesmos dias. RT-A7, RT-A8, RT-A9 e RT-F8 são só da CBS. A prévia mostra cada evento no dia em que vai sair, com o ente. Os eventos ficam *planejados*.
+6. **Enviar eventos (sob demanda):** escolha as notas e os tipos, agrupados por ente: E-IBS-01 a E-IBS-24 e os 26 da CBS (E-CBS-D01 a D07, C01 a C12, P01 a P04, R01 a R03), com o percentual nos parciais. O que falta antes entra sozinho como pré-requisito (D-MG-13); a prévia mostra o que entra e o que não cabe, com o motivo. *Executar e enviar* fecha o dia simulado na hora (D-MG-14). Só root pode **forçar** (ignorar ordem, unicidade, saldo e data) para testar a reação do SplitHub.
+7. **Relógio:** *Fechar o dia* gera o Delta do IBS com os eventos planejados e avisa o webhook. Na CBS, com a `urlRetorno` validada, abre um tíquete por endpoint que mudou e avisa sem pedido (D-MG-03); sem ela, os eventos esperam o pedido. Depois passa ao dia seguinte. *Fechar até* faz isso dia a dia até a data. O relógio não volta.
+
+   > **Fechar vários dias de uma vez pode deixar um link vencer.** O link da CBS vale 48 horas no relógio da POC. Se o *Fechar até* passa dessas 48 horas antes de o SplitHub baixar, o link dos primeiros dias vence e os eventos ficam *não recebido*. É a regra, e vale testar. Para a POC andar sem isso, feche um dia por vez enquanto o SplitHub baixa. O que venceu volta por pedido.
+8. **Barramento:** um painel por ente.
+   - **IBS:** a credencial, a habilitação, e as solicitações com os arquivos (o JSON do Anexo I e o ZIP).
+   - **CBS:** a credencial, a `urlRetorno` do aviso sem pedido (*Validar e salvar* faz o mesmo `HEAD` do pedido; *Desligar* volta a só pedido), e os tíquetes. Cada tíquete traz a origem (pedido ou sem pedido), a janela, o estado, o link com a validade e os downloads, e o JSON.
+   - **Nos dois:** os avisos com cada tentativa e o *Reenviar aviso* (na CBS, o mesmo tíquete e o mesmo link), e as chamadas que o SplitHub fez, com o ente. *Baixar a collection* entrega a collection do Postman de cada ente com a URL e o client id da POC, sem segredo e sem scripts (D-MG-12).
+
+   O link assinado e os segredos aparecem mascarados em todo lugar.
+9. **Histórico da nota:** os eventos dos dois entes na ordem dos dias. Cada evento traz a origem (roteiro, envio, pré-requisito), a situação (*planejado, disponível, avisado, recebido, não recebido, substituído*), o efeito nos campos, o aviso e os downloads.
+   - **IBS:** o efeito nos sete campos do extrato e a linha que saiu no arquivo.
+   - **CBS:** a foto do documento como ficou depois do evento e os tíquetes que a levaram. Os saldos da foto vêm com os calculados do lado do documento: saldo devedor no débito; a apropriar e saldo credor no crédito.
+
+   O download pelo SplitHub é a prova de recebimento, nos dois entes.
+10. **Fim da POC:** *Configuração › Apagar a POC* (só root) leva as notas do cliente, os eventos, os arquivos, os tíquetes e os avisos. A trilha de auditoria fica. Os XMLs do cliente nunca vão para o Git.
+
+### Rotas da Receita Federal emulada (CBS)
+
+Em `<MASSGEN_URL_PUBLICA>/entes/cbs`:
+
+| Rota | O que faz |
+|---|---|
+| `POST /token` | OAuth 2.0, *client credentials*, no formulário ou em Basic. O `access_token` vale 3.600 segundos. |
+| `POST /apuracao-cbs/v2/{endpoint}/{cnpj8}` | Pede `debitos`, `creditos`, `pagamentos` ou `recolhimentos` do CNPJ base da POC, com `{ "urlRetorno": ... }`. Responde 201 com `tiqueteSolicitacao` e `tEASegundos`. |
+| `GET /apuracao-cbs/v2/situacao/{tiquete}` | `PENDENTE`, `EM_PROCESSAMENTO`, `CONCLUIDA` ou `ERRO`; concluído, traz o link e a validade. |
+| `GET /download/v2/{assinatura}` | O link assinado, sem token. Baixar é a prova de recebimento. |
+| `POST <urlRetorno>` | O MassGen avisa o SplitHub com o tíquete, o link e a validade. |
+
+### Decisões do emulador onde o MOC ainda não define (IBS)
 
 Ficam declaradas na collection e valem até o Comitê Gestor publicar:
 
@@ -58,6 +86,23 @@ Ficam declaradas na collection e valem até o Comitê Gestor publicar:
 - **Processamento Diário:** o arquivo do dia D sai às 01:30 de D+1, com validade de 90 dias; vencido sem download, a solicitação expira e o evento fica *não recebido*.
 - **MOV:** o texto exato dos exemplos do Anexo II. As leituras nossas de base de valor (E-IBS-07, 16, 18, 20, 22 e 24) aparecem na tela de envio e na collection.
 - **Arquivo Manual** (incluir e cancelar solicitação) fica para a etapa 3; a listagem já funciona.
+
+### Decisões do emulador onde a documentação da CBS ainda não define
+
+Ficam declaradas na collection da CBS e valem até a Receita Federal publicar:
+
+- **Aviso sem pedido (D-MG-03):** a documentação só prevê o aviso do pedido. Aqui, cada dia fechado abre um tíquete por endpoint que mudou, com os eventos desse dia, e avisa a `urlRetorno` validada na tela da POC. O arquivo sai às 23:00 do dia.
+- **Códigos de erro:** `APURACAO-001` segue a documentação. Os outros são nossos: `APURACAO-401` (token ausente ou vencido), `APURACAO-404` (endpoint, tíquete ou link inexistente), `APURACAO-410` (link vencido) e `APURACAO-429` (limite diário).
+- **Limite:** 4 pedidos por dia simulado em cada endpoint. *Configuração › Limites relaxados* tira o limite.
+- **Janela do pedido:** 8 dias até o pedido, ou desde o dia 1 do mês na primeira coleta do endpoint. O documento entra pelo `atualizacao`, a última mudança dele, com a foto inteira.
+- **Link assinado:** `GET /download/v2/{assinatura}`, sem token, válido por 48 horas no relógio da POC. O reenvio do aviso repete o mesmo link. Vencido sem download, os eventos que nenhum outro tíquete levou ficam *não recebido*.
+- **Atendimento:** `PENDENTE`, `EM_PROCESSAMENTO` e `CONCLUIDA` em menos de um segundo, com `tEASegundos` "1". A documentação admite até 240 minutos.
+- **Horários:** os eventos de um dia fechado entram com o `atualizacao` a partir das 10:00 desse dia.
+- **Tipo do pagamento:** 1 PCONT, 2 RAD e 3 split. A enumeração não foi publicada.
+- **Pagamento em atraso:** multa de 10% e juros de 1% do principal, só para ilustrar.
+- **`numeroDARF`:** o formato do exemplo da documentação, com o ano, o dia do ano e a ordem do evento.
+- **Recolhimento:** vencimento no último dia do mês seguinte ao período de apuração.
+- **Leituras nossas por tipo:** aparecem na tela de envio e na collection.
 
 ## Gerador genérico (fora do menu)
 
@@ -407,7 +452,11 @@ O backup antes da atualização é a garantia de volta. As migrações do banco 
 ```
 server/
   emulacao/    apuração assistida: leitura dos XMLs, catálogo dos 24 tipos do IBS, roteiros, motor, arquivo do Anexo I, relógio
-  entes/       rotas dos entes emulados (/entes/ibs) e a collection do Postman
+    catalogo-cbs.ts  os 26 tipos da CBS, os campos da foto e os três calculados
+    arquivo-cbs.ts   a foto do débito e do crédito, os registros de pagamento e recolhimento, o JSON de cada endpoint
+    cbs.ts           tíquetes da CBS: seleção pela janela ou pelo dia, link assinado, vencimento, download
+  entes/       rotas dos entes emulados (/entes/ibs e /entes/cbs) e as collections do Postman
+    cbs.ts           Receita Federal emulada: token, pedido, situação, download, urlRetorno e aviso
   core/        núcleo genérico: geradores, regras (JSONata), geração, conferência
   engine/      envio: autenticação, limite de taxa, idempotência, retentativa, registro
   servicos/    POCs e notas; pacotes, destinos, modelos, cadastros, cenários, execuções, monitor
@@ -431,6 +480,17 @@ npm test
 Os testes de ponta a ponta sobem o app e a API falsa e conferem:
 
 - a etapa 1 da apuração assistida, com um SplitHub falso que recebe o webhook e baixa os arquivos: a importação dos XMLs, a habilitação, o RT-A1 e o RT-F1 dia a dia, o envio sob demanda com o pré-requisito e o saldo, o forçar, o aviso que falha e o reenvio, o fatiamento com o hash acumulado, a substituição do planejado e o fim da POC;
+- a etapa 2 ([tests/cbs.test.ts](tests/cbs.test.ts)), com um SplitHub falso que responde ao `HEAD`, recebe o aviso e baixa o link:
+  - o catálogo dos 26 tipos e a conta de saldo do estudo;
+  - o token, no formulário e em Basic;
+  - os pedidos recusados;
+  - o RT-A1 e o RT-F1 nos dois entes, com a coleta pela janela e o histórico nos dois entes;
+  - o limite diário;
+  - o aviso sem pedido, com a validação da `urlRetorno` e o envio sob demanda;
+  - o aviso que falha e o reenvio com o mesmo link;
+  - o link vencido e a volta pelo pedido;
+  - os roteiros só da CBS, com multa e juros;
+  - a collection e o fim da POC;
 - o primeiro acesso do root, o convite, os papéis, a sessão vencida, a desativação e o bloqueio de login;
 - o cenário C-01 e os casos de borda do C-05;
 - a idempotência;

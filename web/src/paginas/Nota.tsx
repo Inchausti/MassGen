@@ -93,7 +93,12 @@ export function NotaDetalhe({ pocId, notaId }: { pocId: string; notaId: string }
   const evento = dados.historico.find((e: any) => e.id === aberto);
   const contra = n.papel === 'fornecedor' ? n.destinatario : n.emitente;
   // Com o planejado, só mostra os campos que mexem: a foto da CBS tem quinze, e a maioria fica em zero.
-  const comValor = (saldos: any[]) => saldos.filter((s) => s.noEnte || s.comPlanejado || s.derivado);
+  // Os calculados só do lado do documento: saldo devedor no débito; a apropriar e saldo credor no crédito.
+  const lado = (s: any) => (s.derivado ? (s.nome.startsWith('debitos') ? 'D.' : 'C.') : s.campo.slice(0, 2));
+  const comValor = (saldos: any[]) => {
+    const ativos = new Set(saldos.filter((s) => !s.derivado && (s.noEnte || s.comPlanejado)).map(lado));
+    return saldos.filter((s) => (s.derivado ? ativos.has(lado(s)) : s.noEnte || s.comPlanejado));
+  };
   return (
     <div className="pagina">
       <Cabecalho
@@ -131,7 +136,7 @@ export function NotaDetalhe({ pocId, notaId }: { pocId: string; notaId: string }
       </div>
       {dados.documentosCbs.map((d: any) => (
         <Painel key={d.id} titulo={<>CBS · saldos da foto {d.id === n.id ? 'deste documento' : <>de <Link para={`/pocs/${pocId}/notas/${d.id}`}>{d.rotulo}</Link></>}</>} semPad>
-          <TabelaSaldos saldos={comValor(d.saldos)} rodape="Os campos da foto que têm valor e os três que ela traz calculados (saldo devedor, a apropriar e saldo credor). No barramento: o que a Receita Federal emulada já publicou." />
+          <TabelaSaldos saldos={comValor(d.saldos)} rodape="Os campos da foto que têm valor e os que ela traz calculados: saldo devedor no débito; a apropriar e saldo credor no crédito. No barramento: o que a Receita Federal emulada já publicou." />
         </Painel>
       ))}
       {dados.relacionadas.length > 0 && (
