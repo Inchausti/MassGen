@@ -169,7 +169,7 @@ conferir_entradas() {
     TOKEN=${MASSGEN_TUNEL_TOKEN:-}
     if [[ -z $TOKEN ]]; then
       { : </dev/tty; } 2>/dev/null || falhar "sem terminal para perguntar o token do túnel: passe-o em MASSGEN_TUNEL_TOKEN."
-      printf '\nNo painel do Cloudflare, abra o túnel e copie o comando de instalação do conector, com o token.\n' >/dev/tty
+      printf '\nNo painel do Cloudflare (Networking › Tunnels), abra o túnel e copie o comando de instalação, com o token.\n' >/dev/tty
       printf 'Cole aqui o comando inteiro ou só o token (não aparece na tela) e tecle Enter: ' >/dev/tty
       IFS= read -rs TOKEN </dev/tty || true
       printf '\n' >/dev/tty
@@ -463,7 +463,7 @@ etapa_conferencia() {
     sleep 5
   done
   if [[ $t == massgen-tunel ]]; then
-    aviso "$url ainda não responde pela internet. No painel do Cloudflare, o túnel precisa do hostname público ${url#https://} apontando para o serviço HTTP 127.0.0.1:3000 (não localhost). O DNS pode levar alguns minutos."
+    aviso "$url ainda não responde pela internet. No painel do Cloudflare (Networking › Tunnels › massgen › Routes), o túnel precisa da rota ${url#https://} para o Service URL http://127.0.0.1:3000 (não localhost). O DNS pode levar alguns minutos."
   else
     aviso "$url ainda não responde pela internet (journalctl -u $t)."
   fi

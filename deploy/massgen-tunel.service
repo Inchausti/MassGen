@@ -1,6 +1,6 @@
 # Cloudflare Tunnel do MassGen, criado no painel do Cloudflare. Instalado por deploy/instalar.sh (--tunel painel).
-# O hostname público é configurado no painel, no túnel: o domínio de MASSGEN_URL_PUBLICA apontando para o serviço
-# HTTP 127.0.0.1:3000.
+# O hostname público é configurado no painel, na aba Routes do túnel (Published application): o domínio de
+# MASSGEN_URL_PUBLICA com o Service URL http://127.0.0.1:3000.
 # O token fica em /etc/cloudflared/massgen-tunel.env (TUNNEL_TOKEN=..., só o root lê), e não na linha de comando
 # como no "cloudflared service install <token>": assim ele não aparece no ps nem no systemctl cat.
 

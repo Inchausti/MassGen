@@ -173,9 +173,14 @@ O `deploy/instalar.sh` faz os passos 2 a 7 de uma vez e, rodado de novo, atualiz
 
 **Antes, no painel do Cloudflare:**
 
-1. Em **Networks › Tunnels**, crie um túnel do tipo *Cloudflared* com o nome `massgen`.
-2. Na tela de instalação do conector, copie o comando que traz o token. O instalador vai pedi-lo.
-3. Nos hostnames públicos do túnel (*Public Hostname*, ou *Published application routes*, conforme a versão do painel), aponte o domínio do app para o serviço **HTTP** `127.0.0.1:3000`. Use `127.0.0.1`, não `localhost`. É o mesmo domínio do `--url`.
+1. Em **Networking › Tunnels › Create a tunnel**, crie o túnel com o nome `massgen`.
+2. Na tela seguinte, escolha **Debian** e **arm64** e copie o comando de instalação, que traz o token. Não rode o comando na VM: o instalador pede o token e cuida disso.
+3. No túnel, abra a aba **Routes** › **Add route** › **Published application** e preencha:
+   - **Subdomain:** `massgen`;
+   - **Domain:** o seu domínio;
+   - **Service URL:** `http://127.0.0.1:3000`. Use `127.0.0.1`, não `localhost`.
+
+   O endereço resultante é o do `--url`.
 
 **Na VM**, pelo SSH do passo 1:
 
@@ -311,7 +316,7 @@ curl -s "https://$DOMINIO/api/saude"
 
 O `echo` precisa mostrar o UUID e o domínio. Se o domínio sair vazio, o `MASSGEN_URL_PUBLICA` do `.env` não começa com `https://`. O último `curl` deve responder `{"ok":true}`, já pela internet.
 
-Prefere criar o túnel pelo painel (**Networks › Tunnels**)? É o caminho do instalador (`--tunel painel`). O hostname público é configurado lá: o mesmo domínio, apontando para `http://127.0.0.1:3000`. Nesse caso, o `config.yml` não é usado, e a camada opcional do Access no `cloudflared` (passo 8, item 3) também é ligada no painel. À mão, sem o instalador, o painel dá um comando `cloudflared service install <token>`.
+Prefere criar o túnel pelo painel (**Networking › Tunnels**)? É o caminho do instalador (`--tunel painel`). O hostname público é configurado lá, na aba **Routes** do túnel: o mesmo domínio, apontando para `http://127.0.0.1:3000`. Nesse caso, o `config.yml` não é usado, e a camada opcional do Access no `cloudflared` (passo 8, item 3) também é ligada no painel. À mão, sem o instalador, o painel dá um comando `cloudflared service install <token>`.
 
 ### 7. Primeiro acesso dos roots
 
