@@ -280,7 +280,7 @@ test('D-MG-05 e defasagem: o painel diz qual XML falta; a CBS anda dias depois d
   assert.equal(devolucao.texto, 'Para cobrir E-IBS-19 e E-IBS-20, o lote precisa de uma NF-e de devolução de uma nota de entrada.');
   // O D07 aceita qualquer das três relacionadas, dos dois lados: a frase dele lista as alternativas.
   const d07 = c.faltam.find((f: any) => f.tipos.includes('E-CBS-D07'));
-  assert.match(d07.xml, /o XML do cancelamento de uma nota de entrada ou .*uma NF-e complementar de uma nota de saída/);
+  assert.match(d07.xml, /o XML do cancelamento de uma nota de entrada ou .*uma NF-e ou um CT-e complementar de uma nota de saída/);
   assert.equal(c.ibs.find((l: any) => l.id === 'E-IBS-19').situacao, 'falta nota de devolução');
   assert.equal(c.ibs.find((l: any) => l.id === 'E-IBS-02').situacao, 'falta nota de saída');
   assert.equal(c.cbs.find((l: any) => l.id === 'E-CBS-C04').situacao, 'sem nota no plano', 'a nota de entrada que há cobre o RT-A7');

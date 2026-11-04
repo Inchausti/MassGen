@@ -75,8 +75,8 @@ const DE_OUTRO = nfe({ numero: 1007, emit: FORNECEDOR, dest: COMPRADOR, ibs: 500
 
 test('XML: lê a NF-e com o grupo de IBS e CBS, a nota referenciada e o cancelamento', () => {
   const d = lerDocumento(COMPLEMENTAR.xml);
-  assert.equal(d.tipo, 'nfe');
-  if (d.tipo !== 'nfe') return;
+  assert.equal(d.tipo, 'nota');
+  if (d.tipo !== 'nota') return;
   assert.equal(d.nota.chave, COMPLEMENTAR.chave);
   assert.equal(d.nota.finalidade, 'complementar');
   assert.deepEqual(d.nota.refChaves, [ENTRADA.chave]);
@@ -240,7 +240,7 @@ test('POC: credencial do IBS emulado mostrada uma vez, e o lote de XMLs separa o
   assert.equal(imp.cancelamentos, 1);
   assert.equal(imp.ligadas, 1, 'a complementar se liga à original');
   const motivos = imp.itens.filter((i: any) => i.resultado === 'fora').map((i: any) => i.motivo).sort();
-  assert.deepEqual(motivos, ['a nota não tem o grupo de IBS e CBS', 'nota de homologação', 'o CNPJ raiz 12345678 não está na nota como emitente nem como destinatário']);
+  assert.deepEqual(motivos, ['NF-e de homologação', 'a NF-e não tem o grupo de IBS e CBS', 'o CNPJ raiz 12345678 não está na NF-e como emitente nem como destinatário']);
   assert.ok(imp.itens.some((i: any) => i.resultado === 'ignorado' && i.motivo === 'não é XML'));
   const rep = await api('POST', `/pocs/${pocId}/notas`, { arquivos: [{ nome: 'de-novo.xml', conteudo: ENTRADA.xml }] });
   assert.equal(rep.repetidas, 1);

@@ -6,7 +6,7 @@ import { ErroHttp } from '../http.ts';
 import { CAMPOS, ROTULO_RELACIONADA, TIPO_IBS, numeroIbs, type Base, type Relacionada, type TipoEvento } from './catalogo.ts';
 import { CAMPOS_CBS, ORDEM_CBS, TIPO_CBS, derivadoCbs, multaJuros, numeroCbs, type Endpoint } from './catalogo-cbs.ts';
 import { paDe, type DadosCbs } from './arquivo-cbs.ts';
-import { diaDe } from './xml.ts';
+import { diaDe, siglaModelo } from './xml.ts';
 
 export interface NotaRow {
   id: string; poc_id: string; chave: string; modelo: string | null; serie: string | null; numero: string | null; emissao: string | null; autorizacao: string | null;
@@ -29,8 +29,9 @@ export function somarDias(dia: string, n: number): string {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
+// "NF-e 1.001", "CT-e 3.001", "NFS-e 4.001": a sigla do modelo e o número.
 export function rotuloNota(n: Pick<NotaRow, 'modelo' | 'numero' | 'chave'>): string {
-  const doc = n.modelo === '65' ? 'NFC-e' : 'NF-e';
+  const doc = siglaModelo(n.modelo ?? '55');
   return n.numero ? `${doc} ${Number(n.numero).toLocaleString('pt-BR')}` : `${doc} …${n.chave.slice(-6)}`;
 }
 

@@ -2,7 +2,7 @@
 
 Emulador da **apuração assistida** da CBS e do IBS para as POCs do SplitHub (proposta v4.3). As notas do cliente entram no SplitHub da POC e no MassGen. O MassGen faz o papel dos entes diante do SplitHub: monta o barramento de cada nota pela documentação deles, avisa o webhook e serve os arquivos, com o histórico de cada nota. Nada chama a Receita Federal, o Comitê Gestor ou o SplitHub de produção.
 
-Os dois entes estão prontos: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10, e a **Receita Federal emulada (CBS)**, pelas APIs de Apuração da CBS v2. Por cima deles, o **plano e o painel de cobertura** fecham os 59 tipos com um lote só: os 24 do IBS, os 26 da CBS e os 9 casos de transporte e falha. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
+Os dois entes estão prontos: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10, e a **Receita Federal emulada (CBS)**, pelas APIs de Apuração da CBS v2. Por cima deles, o **plano e o painel de cobertura** fecham os 59 tipos com um lote só: os 24 do IBS, os 26 da CBS e os 9 casos de transporte e falha. O lote aceita NF-e, NFC-e, CT-e e NFS-e. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
 
 O gerador de massa genérico das versões anteriores continua no app, fora do menu (D-MG-01): veja [Gerador genérico](#gerador-genérico-fora-do-menu).
 
@@ -44,12 +44,18 @@ Cada POC é um cliente e uma competência. O caminho, pelo menu **POCs**:
    - a da Receita Federal emulada: a URL base (`<MASSGEN_URL_PUBLICA>/entes/cbs`), o `client_id` e o `client_secret`.
 
    Elas vão para o cofre do SplitHub da POC; o MassGen guarda só o hash. Perdeu uma? *Barramento › Gerar credencial nova* no painel do ente (a anterior para de valer na hora).
-2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora, com o motivo. O CNPJ raiz diz se a nota é de entrada ou de saída. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original. Na CBS, cada nota é um documento.
+2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram **NF-e, NFC-e, CT-e e NFS-e** autorizados, de produção, com o grupo de IBS e CBS dos leiautes da reforma (D-MG-10); o resto fica de fora, com o motivo na tela. Veja [o que fica de fora por ora](#documentos-que-ficam-de-fora-por-ora).
+   - **Onde cada leiaute traz o IBS e a CBS:** na NF-e e na NFC-e, `total/IBSCBSTot` (NT 2025.002); no CT-e, `imp/IBSCBS` (NT 2025.001); na NFS-e do padrão nacional, o grupo `IBSCBS` que a Sefin Nacional calcula na NFS-e gerada. A DPS sozinha fica de fora: ela não tem a chave nem os valores calculados.
+   - **Entrada ou saída:** o CNPJ raiz do cliente decide. Na NF-e e na NFC-e, ele é o emitente ou o destinatário. No CT-e, o emitente ou o tomador (`toma3` aponta o remetente, o expedidor, o recebedor ou o destinatário; `toma4` traz outro). Na NFS-e, o prestador ou o tomador. O destinatário da NFC-e pode ser um CPF ou faltar.
+   - **Cancelamento:** o XML do evento marca o documento. Na NF-e, na NFC-e e no CT-e, é o 110111 com o retorno autorizado (135 ou 155); na NFS-e, o e101101 registrado pela Sefin Nacional.
+   - **Documentos ligados:** a NF-e complementar, a NF-e de devolução e o CT-e de complemento (`tpCTe` 1) se ligam ao original.
+   - **Nos entes:** no IBS, cada documento abre uma operação, com o extrato dela; o complementar e o de devolução lançam na operação do original. A chave da NFS-e vai com os 50 dígitos. Na CBS, cada documento é um documento próprio, com o modelo na foto: 55, 65, 57 ou 91.
 3. **Habilitação (IBS):** o SplitHub da POC chama `POST /entes/ibs/v1/aassist/habilitar` com a credencial, a `webhookUrl` (HTTPS; `http` só em `localhost`) e o `tokenContrib`, como faria com o Comitê Gestor. A `webhookUrl` passa pela trava de domínios (`ALLOWED_DESTINATION_DOMAINS`).
 4. **Pedido (CBS):** a CBS não tem habilitação. O SplitHub pega o token em `POST /entes/cbs/token` e pede cada endpoint (débitos, créditos, pagamentos, recolhimentos) com a `urlRetorno`, como faria com a Receita Federal. A `urlRetorno` passa pela mesma trava e pelo `HEAD`, que precisa de 2xx. A resposta é o tíquete; o MassGen atende, avisa a `urlRetorno` com o link assinado, e o SplitHub baixa o JSON por ele. Veja as [rotas](#rotas-da-receita-federal-emulada-cbs).
 5. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A9, RT-F1 a RT-F8). Os roteiros com IBS e CBS soltam os eventos dos dois entes nos mesmos dias, a menos que haja **defasagem**: com +2, a CBS começa dois dias depois do IBS; com −2, dois dias antes. O padrão fica em *Configuração › Defasagem da CBS* (de −30 a 30), e o roteiro e o plano aceitam outro valor. RT-A7, RT-A8, RT-A9 e RT-F8 são só da CBS. A prévia mostra cada evento no dia em que vai sair, com o ente. Os eventos ficam *planejados*.
 6. **Cobertura:** a aba mostra **quantos dos tipos o SplitHub já recebeu** (por exemplo, *16 de 59 tipos recebidos*), com uma tabela por ente (IBS, CBS) e outra dos casos de transporte e falha. Cada tipo traz as notas no plano, quantas foram avisadas e recebidas, e a situação: *coberto*, *não baixado*, *não recebido*, *disponível*, *planejado* (com o dia) ou o XML que falta. O tipo só conta quando o SplitHub baixa um arquivo com ele.
-   - ***Montar plano*** dá a cada nota livre o roteiro que cobre o que ainda falta (D-MG-04): as notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta tipo novo segue o caminho feliz (RT-A1 ou RT-F1). A prévia roda o plano e desfaz, então mostra exatamente o que o botão grava: os envios, as notas e o que cada uma acrescenta. ***Refazer plano*** libera antes as notas que só têm eventos planejados por roteiro.
+   - **Modelos:** a subaba *Cobertura › Modelos* mostra, por modelo (NF-e, NFC-e, CT-e, NFS-e), os documentos aceitos e os de fora, e se o SplitHub já baixou um arquivo com um documento dele no IBS e na CBS. O modelo conta quando chegou pelos dois entes. Fica fora da meta dos 59 tipos. Um modelo que só tem documentos de fora aparece com a situação *só documentos de fora*.
+   - ***Montar plano*** dá a cada nota livre o roteiro que cobre o que ainda falta (D-MG-04). Primeiro, o modelo que ainda não saiu num ente; depois, os tipos. As notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta tipo nem modelo novo segue o caminho feliz (RT-A1 ou RT-F1). A prévia roda o plano e desfaz, então mostra exatamente o que o botão grava: os envios, as notas e o que cada uma acrescenta. ***Refazer plano*** libera antes as notas que só têm eventos planejados por roteiro.
    - **O que o lote não cobre** vem numa frase por XML (D-MG-05), como *Para cobrir E-IBS-19 e E-IBS-20, o lote precisa de uma NF-e de devolução de uma nota de entrada.* O MassGen nunca inventa uma nota.
 7. **Casos de transporte e falha (T01 a T09):** na aba *Cobertura › Transporte e falha*, cada caso começa desligado. Ligar põe o caso na meta; com os nove ligados, a meta é 59. O que o SplitHub precisa fazer e o que fecha cada caso estão na tabela.
    - **O MassGen provoca, uma vez, na próxima oportunidade:** T02 (o pedido da CBS conclui com o link vencido; o download responde 410), T03 (o pedido da CBS termina em `ERRO APURACAO-408`, e o aviso leva o erro), T05 (uma operação do Delta sai em dois arquivos), T06 (um dia com lançamentos no IBS fica sem Delta e sem aviso), T07 (a primeira linha do dia some do Delta e o hash continua contando com ela) e T09 (a primeira resposta 2xx do aviso é descartada e o mesmo aviso se repete, em cada ente). *Provocar de novo* arma o caso outra vez.
@@ -109,6 +115,8 @@ Ficam declaradas na collection e valem até o Comitê Gestor publicar:
 - **Nova Solicitação (Arquivo Manual):** um `GET` com corpo, como o MOC; quem não consegue mandar corpo num `GET` pode mandar os mesmos campos na query. Datas no formato AAAA-MM-DD.
 - **Regras do Arquivo Manual:** 2 por dia e 2 por competência no mesmo dia (*Configuração › Limites relaxados* tira o limite); o período fica numa competência só, não passa do dia simulado e não se sobrepõe a outra manual ativa (a cancelada não conta). Sai no Processamento Diário seguinte, no mesmo formato do Delta, com `tiposolicitacao` "solicitação manual"; um período sem lançamento gera um arquivo vazio. A validade fica vazia enquanto a solicitação está *SOLICITADA* e vai a 90 dias na geração.
 - **Recusas que o MOC não codifica:** na Nova Solicitação, 400 (dados), 409 (sobreposição) e 429 (limite do dia); no Cancelamento, 404 (não existe) e 409 (já processada ou não é manual). O corpo segue `{ resultado, mensagem }`.
+- **Documentos:** NF-e, NFC-e, CT-e e NFS-e abrem operação. O Anexo I não traz o modelo. No CT-e e na NFS-e, o `CNPJ_ADQUIRENTE` é o do tomador. Sem CNPJ do adquirente (NFC-e ao consumidor, tomador pessoa física), o campo não vem, como o Anexo I permite (0-1).
+- **`CHAVE_ACESSO` da NFS-e:** o Anexo I dá C(44), e a chave da NFS-e do padrão nacional tem 50 dígitos. O MassGen manda a chave inteira, como a CBS (string(50)).
 
 ### Decisões do emulador onde a documentação da CBS ainda não define
 
@@ -127,6 +135,20 @@ Ficam declaradas na collection da CBS e valem até a Receita Federal publicar:
 - **`numeroDARF`:** o formato do exemplo da documentação, com o ano, o dia do ano e a ordem do evento.
 - **Recolhimento:** vencimento no último dia do mês seguinte ao período de apuração.
 - **Leituras nossas por tipo:** aparecem na tela de envio e na collection.
+- **`documento` (tabela A.9):** NF-e 55, NFC-e 65 e CT-e 57, como a tabela. A NFS-e não tem modelo no leiaute: vai 91, e não 92 (NFS-e Via), que a documentação não explica. A chave da NFS-e tem 50 dígitos e cabe no string(50).
+
+### Documentos que ficam de fora por ora
+
+Decisões provisórias: cada um fica de fora, com o motivo na aba *Notas*, até os leiautes ou os entes dizerem como ele entra na apuração.
+
+- **CT-e de substituição (`tpCTe` 3):** os entes ainda não dizem como a substituição entra.
+- **CT-e Simplificado (`tpCTe` 5) e a substituição dele (`tpCTe` 6):** ficam para depois; por ora, entram só o CT-e comum e o de complemento.
+- **NFS-e de substituição** (com `subst/chSubstda` ou `cStat` 101) e o cancelamento por substituição (evento e105102): os entes ainda não dizem como a substituta se liga à substituída.
+- **NFS-e com `finNFSe` diferente de 0:** os entes ainda não dizem como ela entra.
+- **Pedido de cancelamento da NFS-e sem o registro da Sefin Nacional:** só o evento registrado cancela.
+- **DPS sem a NFS-e:** a DPS não tem a chave nem o IBS e a CBS calculados.
+- **CT-e OS (modelo 67), NFCom, BP-e e NF3-e:** fora do escopo da primeira etapa.
+- **Documentos de homologação, sem o grupo de IBS e CBS, sem autorização ou sem o CNPJ raiz do cliente:** como na NF-e.
 
 ## Gerador genérico (fora do menu)
 
@@ -476,6 +498,7 @@ O backup antes da atualização é a garantia de volta. As migrações do banco 
 ```
 server/
   emulacao/    apuração assistida: leitura dos XMLs, catálogo dos 24 tipos do IBS, roteiros, motor, arquivo do Anexo I, relógio
+    xml.ts           leitura da NF-e, NFC-e, CT-e e NFS-e e dos cancelamentos, pelos leiautes da reforma, com o motivo do que fica de fora
     catalogo-cbs.ts  os 26 tipos da CBS, os campos da foto e os três calculados
     arquivo-cbs.ts   a foto do débito e do crédito, os registros de pagamento e recolhimento, o JSON de cada endpoint
     cbs.ts           tíquetes da CBS: seleção pela janela ou pelo dia, link assinado, vencimento, download
@@ -493,7 +516,7 @@ server/
 packs/         pacotes de domínio (splithub.json)
 mock/          API falsa no estilo do SplitHub
 web/           interface (React + Vite)
-tests/         testes do núcleo e de ponta a ponta; ibs, cbs e cobertura são as três etapas da apuração assistida
+tests/         testes do núcleo e de ponta a ponta; ibs, cbs e cobertura são as três etapas da apuração assistida; modelos, os quatro documentos
 deploy/        instalador de um comando, systemd, backup, túneis do Cloudflare e Cloudflare Access, para hospedar numa VM
 .github/       verificação da implantação num Linux de verdade (x64 e ARM)
 ```
@@ -528,6 +551,12 @@ Os testes de ponta a ponta sobem o app e a API falsa e conferem:
   - as regras do Arquivo Manual, o cancelamento e a entrega no Processamento Diário seguinte (T04, T06, T07);
   - a troca de roteiro de uma nota que já tem história;
   - as collections dos dois entes;
+- os modelos ([tests/modelos.test.ts](tests/modelos.test.ts)), com documentos fictícios de valores redondos:
+  - a leitura da NF-e, da NFC-e, do CT-e (`toma3`, `toma4` e o complemento) e da NFS-e, com os cancelamentos;
+  - o que fica de fora, com o motivo: o CT-e de substituição, o CT-e OS, a NFS-e substituta, a de homologação, a NFC-e sem o grupo e o pedido de cancelamento solto;
+  - a subaba *Modelos* e o plano, que cobre os quatro modelos nos dois entes;
+  - no IBS, a chave de 50 dígitos da NFS-e, o tomador como adquirente e o complemento do CT-e na operação do original;
+  - na CBS, o `documento` 55, 65, 57 e 91 na foto;
 - o relógio automático ([tests/relogio.test.ts](tests/relogio.test.ts)), com o intervalo de 1 segundo e um SplitHub falso que baixa o que chega:
   - um dia por passo nos dois entes, com a defasagem da CBS, os avisos e nenhum link vencido;
   - a data de parada;

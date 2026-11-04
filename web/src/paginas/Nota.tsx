@@ -193,7 +193,7 @@ export function NotaDetalhe({ pocId, notaId }: { pocId: string; notaId: string }
       <CaixaErro erro={acao.erro} />
       {n.situacao === 'fora' && <div className="alerta aviso"><div>Esta nota ficou de fora da POC: {n.motivo}.</div></div>}
       {op.id !== n.id && (
-        <div className="alerta info"><div>Nota {ROTULO_FINALIDADE[n.finalidade]?.toLowerCase()} da <Link para={`/pocs/${pocId}/notas/${op.id}`}>{op.rotulo}</Link>. No IBS, os eventos ficam na operação da nota original; na CBS, esta nota é um documento próprio, e só o ajuste (E-CBS-D07) muda a foto da original.</div></div>
+        <div className="alerta info"><div>{n.rotulo}, {ROTULO_FINALIDADE[n.finalidade]?.toLowerCase()} de <Link para={`/pocs/${pocId}/notas/${op.id}`}>{op.rotulo}</Link>. No IBS, os eventos ficam na operação do documento original; na CBS, este é um documento próprio, e só o ajuste (E-CBS-D07) muda a foto do original.</div></div>
       )}
       <div className="lado-a-lado">
         <Painel titulo="Nota">
@@ -202,8 +202,9 @@ export function NotaDetalhe({ pocId, notaId }: { pocId: string; notaId: string }
             <dt>Série e número</dt><dd>{n.serie ?? '—'} · {n.numero ?? '—'}</dd>
             <dt>Finalidade</dt><dd>{ROTULO_FINALIDADE[n.finalidade] ?? n.finalidade}{n.canceladaEm && <> · <span className="selo erro sem-ponto">Cancelada em {quando(n.canceladaEm)}</span></>}</dd>
             <dt>Autorização</dt><dd>{quando(n.autorizacao)}</dd>
-            <dt>Emitente</dt><dd>{n.emitente.nome ?? '—'} <span className="dica mono">{n.emitente.doc}</span></dd>
-            <dt>Destinatário</dt><dd>{n.destinatario.nome ?? '—'} <span className="dica mono">{n.destinatario.doc}</span></dd>
+            {/* No CT-e e na NFS-e, o adquirente é o tomador; na NFS-e, o emitente é o prestador. */}
+            <dt>{n.modelo === '91' ? 'Prestador' : 'Emitente'}</dt><dd>{n.emitente.nome ?? '—'} <span className="dica mono">{n.emitente.doc}</span></dd>
+            <dt>{n.modelo === '57' || n.modelo === '91' ? 'Tomador' : 'Destinatário'}</dt><dd>{n.destinatario.nome ?? '—'} <span className="dica mono">{n.destinatario.doc}</span></dd>
             <dt>IBS</dt><dd>{moeda(n.vIbs)} <span className="dica">UF {moeda(n.vIbsUf)} · município {moeda(n.vIbsMun)}</span></dd>
             <dt>CBS</dt><dd>{moeda(n.vCbs)}</dd>
             {op.operacaoId && <><dt>Operação no arquivo</dt><dd className="mono">{op.operacaoId}</dd></>}

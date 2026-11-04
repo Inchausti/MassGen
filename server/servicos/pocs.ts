@@ -14,7 +14,7 @@ import { expirou, type TiqueteRow } from '../emulacao/cbs.ts';
 import { carregarEstado, obterPoc, rotuloNota, saldoDe, type NotaRow, type PocRow } from '../emulacao/execucao.ts';
 import { DEFASAGEM_MAX } from '../emulacao/plano.ts';
 import { estadoRelogio } from '../emulacao/relogio-automatico.ts';
-import { lerDocumento, raizCnpj, type CancelamentoLido, type NotaLida } from '../emulacao/xml.ts';
+import { MODELOS, lerDocumento, listaSiglas, noDoc, oDoc, raizCnpj, siglaModelo, type CancelamentoLido, type NotaLida } from '../emulacao/xml.ts';
 import { ehZip, lerZip } from '../emulacao/zip.ts';
 import { PREFIXO_IBS, tentativasDoAviso, type ArquivoRow } from '../entes/ibs.ts';
 import { credencialCbs, tiquetesDaPoc, urlCbs } from '../entes/cbs.ts';
@@ -124,22 +124,27 @@ export interface ResultadoImportacao {
   itens: { arquivo: string; chave?: string; nota?: string; resultado: 'aceita' | 'fora' | 'cancelamento' | 'repetida' | 'ignorado'; motivo?: string }[];
 }
 
+// O papel do cliente: fornecedor quando é o emitente (o prestador, na NFS-e); adquirente quando é o destinatário (o
+// tomador, no CT-e e na NFS-e).
 function papelDe(poc: PocRow, n: NotaLida): { papel?: 'adquirente' | 'fornecedor'; motivo?: string } {
+  const m = MODELOS[n.modelo];
   const emit = raizCnpj(n.emitCnpj) === poc.cnpj_raiz;
   const dest = raizCnpj(n.destDoc) === poc.cnpj_raiz;
-  if (emit && dest) return { motivo: 'o cliente é emitente e destinatário ao mesmo tempo' };
+  if (emit && dest) return { motivo: `o cliente é ${m?.fornecedor ?? 'emitente'} e ${m?.adquirente ?? 'destinatário'} ao mesmo tempo` };
   if (emit) return { papel: 'fornecedor' };
   if (dest) return { papel: 'adquirente' };
-  return { motivo: `o CNPJ raiz ${poc.cnpj_raiz} não está na nota como emitente nem como destinatário` };
+  return { motivo: `o CNPJ raiz ${poc.cnpj_raiz} não está ${noDoc(n.modelo)} como ${m?.fornecedor ?? 'emitente'} nem como ${m?.adquirente ?? 'destinatário'}` };
 }
 
-// O que deixa a nota de fora, na ordem da seção 04.
+// O que deixa o documento de fora, na ordem da seção 04.
 function motivoFora(poc: PocRow, n: NotaLida): string | undefined {
-  if (n.modelo !== '55') return n.modelo === '65' ? 'NFC-e entra na etapa seguinte; por ora, só NF-e (D-MG-10)' : `modelo ${n.modelo}: por ora, só NF-e (D-MG-10)`;
-  if (n.ambiente === 'homologacao') return 'nota de homologação';
-  if (!n.grupoIbsCbs) return 'a nota não tem o grupo de IBS e CBS';
-  if (n.situacaoSefaz && !['100', '150'].includes(n.situacaoSefaz)) return `a nota não está autorizada (cStat ${n.situacaoSefaz})`;
-  if (!n.autorizacao) return 'a nota não tem o protocolo de autorização';
+  const m = MODELOS[n.modelo];
+  if (!m) return `${siglaModelo(n.modelo)}: por ora, entram ${listaSiglas('e')} (D-MG-10)`;
+  if (n.restricao) return n.restricao;
+  if (n.ambiente === 'homologacao') return `${m.sigla} de homologação`;
+  if (!n.grupoIbsCbs) return `${oDoc(n.modelo)} não tem o grupo de IBS e CBS`;
+  if (n.situacaoSefaz && !m.autorizada.includes(n.situacaoSefaz)) return `${oDoc(n.modelo)} não está autorizad${m.genero} (cStat ${n.situacaoSefaz})`;
+  if (!n.autorizacao) return `${oDoc(n.modelo)} não tem ${n.modelo === '91' ? 'a data de processamento (dhProc)' : 'o protocolo de autorização'}`;
   return papelDe(poc, n).motivo;
 }
 
@@ -200,7 +205,7 @@ export function importarNotas(pocId: string, arquivos: unknown, usuario: string)
     for (const { arquivo, c, xml } of cancelamentos) {
       const nota = um<{ id: string; numero: string | null; modelo: string | null; chave: string }>('SELECT id, numero, modelo, chave FROM notas WHERE poc_id = ? AND chave = ?', poc.id, c.chave);
       if (!nota) { r.itens.push({ arquivo, chave: c.chave, resultado: 'ignorado', motivo: 'cancelamento de uma nota que não está na POC' }); continue; }
-      if (!c.autorizado) { r.itens.push({ arquivo, chave: c.chave, resultado: 'ignorado', motivo: `cancelamento sem retorno autorizado (cStat ${c.situacaoSefaz ?? 'ausente'})` }); continue; }
+      if (!c.autorizado) { r.itens.push({ arquivo, chave: c.chave, resultado: 'ignorado', motivo: c.recusa ?? `cancelamento sem retorno autorizado (cStat ${c.situacaoSefaz ?? 'ausente'})` }); continue; }
       executar('UPDATE notas SET cancelada_em = ?, cancelamento_xml = ? WHERE id = ?', c.quando ?? agora(), xml, nota.id);
       r.cancelamentos++;
       r.itens.push({ arquivo, chave: c.chave, nota: rotuloNota(nota), resultado: 'cancelamento' });

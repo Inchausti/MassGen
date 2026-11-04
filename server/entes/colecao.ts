@@ -21,6 +21,8 @@ const PROVISORIOS = [
   'Recusas da Nova Solicitação, que o MOC não codifica: 400 (dados), 409 (sobreposição) e 429 (limite do dia). Cancelamento: 404 (não existe) e 409 (já processada ou não é manual). O corpo segue { resultado, mensagem }.',
   'Validade da solicitação manual: vazia enquanto SOLICITADA; 90 dias a partir da geração.',
   'Casos de transporte e falha da POC (ligados um a um na tela): T05 fatia uma operação em dois arquivos do Delta; T06 pula o Delta de um dia; T07 tira uma linha do Delta e mantém o hash acumulado com ela; T09 descarta o primeiro 2xx do próximo aviso e repete o mesmo aviso.',
+  'Documentos: NF-e, NFC-e, CT-e e NFS-e abrem operação. O Anexo I não traz o modelo; no CT-e e na NFS-e, o CNPJ_ADQUIRENTE é o do tomador. Sem CNPJ do adquirente (NFC-e ao consumidor, tomador pessoa física), o campo não vem, como o Anexo I permite (0-1).',
+  'CHAVE_ACESSO da NFS-e: o Anexo I dá C(44), e a chave da NFS-e do padrão nacional tem 50 dígitos. A NFS-e está no piloto desde a Etapa 2 (jun/2026); o MassGen manda a chave inteira, como a CBS (string(50)).',
   ...CATALOGO_IBS.filter((t) => t.nota).map((t) => `${t.id} (${t.mov}): ${t.nota}`),
 ];
 
@@ -109,6 +111,7 @@ const PROVISORIOS_CBS = [
   'Pagamento em atraso: multa de 10% e juros de 1% do principal, arredondados ao real, só para ilustrar.',
   'numeroDARF: o formato do exemplo da documentação, com o ano, o dia do ano e a ordem do evento.',
   'Recolhimento: vencimento no último dia do mês seguinte ao período de apuração.',
+  'documento (A.9): NF-e 55, NFC-e 65 e CT-e 57, como a tabela. A NFS-e não tem modelo no leiaute: vai 91, e não 92 (NFS-e Via), que a documentação não explica. A chave da NFS-e tem 50 dígitos e cabe no string(50).',
   ...CATALOGO_CBS.filter((t) => t.nota).map((t) => `${t.id} (${t.mov}): ${t.nota}`),
 ];
 

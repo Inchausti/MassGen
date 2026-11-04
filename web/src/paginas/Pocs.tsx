@@ -469,7 +469,7 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
         semPad
       >
         <div className="painel-corpo pilha">
-          <p className="dica">Os mesmos XMLs que o SplitHub da POC importou. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora com o motivo. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original.</p>
+          <p className="dica">Os mesmos XMLs que o SplitHub da POC importou. Entram NF-e, NFC-e, CT-e e NFS-e autorizados, de produção, com o grupo de IBS e CBS (D-MG-10); o resto fica de fora com o motivo. No CT-e e na NFS-e, o adquirente é o tomador. O XML de cancelamento marca o documento; o complemento (NF-e ou CT-e) e a devolução (NF-e) se ligam ao original.</p>
           <div className="linha-flex">
             <input type="search" placeholder="Chave, número, CNPJ ou nome" value={filtro.busca} onChange={(e) => setFiltro({ ...filtro, busca: e.target.value })} style={{ flex: '1 1 220px' }} />
             <select aria-label="Papel" value={filtro.papel} onChange={(e) => setFiltro({ ...filtro, papel: e.target.value })}><option value="">Entrada e saída</option><option value="adquirente">Entrada</option><option value="fornecedor">Saída</option></select>
@@ -616,7 +616,7 @@ const COR_SITUACAO_TIPO = (s: string) =>
 const SeloSituacaoTipo = ({ s }: { s: string }) => <span className={`selo ${COR_SITUACAO_TIPO(s)}`}>{s.charAt(0).toUpperCase() + s.slice(1)}</span>;
 
 const MOTIVO_PLANO: Record<string, string> = {
-  feliz: 'caminho feliz: não acrescenta tipo novo',
+  feliz: 'caminho feliz: não acrescenta tipo nem modelo novo',
   caso: 'caminho feliz, com dois passos do IBS no mesmo dia, para o T05 e o T07',
 };
 
@@ -665,7 +665,7 @@ function MontarPlano({ poc, refazer: refazerInicial, aoFechar, aoAplicar }: { po
         </Campo>
       </div>
       <label className="check"><input type="checkbox" checked={refazer} onChange={(e) => setRefazer(e.target.checked)} /> Refazer: as notas que só têm eventos planejados por roteiro voltam a ficar livres e entram no plano de novo</label>
-      <p className="dica">O plano cobre primeiro os tipos que faltam (D-MG-04): as notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta tipo novo segue o caminho feliz. As notas marcadas como fora do SplitHub só entram com o T08 ligado. Depois, troque o roteiro de qualquer nota na página dela.</p>
+      <p className="dica">O plano cobre primeiro o que falta (D-MG-04): o modelo (NF-e, NFC-e, CT-e, NFS-e) que ainda não saiu num ente, depois os tipos. As notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta nada novo segue o caminho feliz. As notas marcadas como fora do SplitHub só entram com o T08 ligado. Depois, troque o roteiro de qualquer nota na página dela.</p>
       {!previa && !erroPrevia ? <Carregando texto="Montando a prévia…" /> : previa && <>
         <div className="alerta info"><div>
           <strong>{numero(previa.notas)} nota(s) em {numero(previa.envios.length)} envio(s), {numero(previa.eventos)} evento(s).</strong> Com o plano, {numero(comNota)} dos {numero(tipos)} tipos dos dois entes têm nota.
@@ -704,7 +704,7 @@ function TabelaTipos({ pocId, linhas }: { pocId: string; linhas: any[] }) {
           <td className="num">{numero(l.notas)}{l.exemplos.length > 0 && <div className="dica">{l.exemplos.map((e: any, k: number) => <span key={e.id}>{k ? ', ' : ''}<Link para={`/pocs/${pocId}/notas/${e.id}`}>{e.rotulo}</Link></span>)}</div>}</td>
           <td className="num">{numero(l.avisado)}</td>
           <td className="num">{numero(l.recebido)}</td>
-          <td><SeloSituacaoTipo s={l.situacao} />{l.falta && <div className="dica">precisa de {l.falta}</div>}</td>
+          <td><SeloSituacaoTipo s={l.situacao} />{l.falta && <div className="dica">precisa {l.falta.startsWith('o ') ? `do ${l.falta.slice(2)}` : `de ${l.falta}`}</div>}</td>
         </tr>
       ))}</tbody>
     </table></div>
@@ -745,7 +745,27 @@ function TabelaCasos({ poc, casos, leitor, aoMudar }: { poc: any; casos: any[]; 
   </>;
 }
 
-type SubCobertura = 'ibs' | 'cbs' | 'casos';
+// Os modelos do lote (NF-e, NFC-e, CT-e, NFS-e): fora da meta dos tipos, cada um coberto quando chegou pelos dois entes.
+function TabelaModelos({ linhas }: { linhas: any[] }) {
+  if (!linhas.length) return <Vazio titulo="Nenhum documento importado">Importe os XMLs do cliente na aba Notas.</Vazio>;
+  return (
+    <div className="tabela-wrap"><table className="tabela">
+      <thead><tr><th>Modelo</th><th className="num">Aceitos</th><th className="num">De fora</th><th>IBS</th><th>CBS</th></tr></thead>
+      <tbody>{linhas.map((m) => (
+        <tr key={m.modelo}>
+          <td><strong>{m.sigla}</strong><div className="dica">{m.aceito ? `documento ${m.documentoCbs} na CBS` : 'fora da POC por ora'}</div></td>
+          <td className="num">{numero(m.aceitas)}{m.aceitas > 0 && <div className="dica">{numero(m.entrada)} entrada · {numero(m.saida)} saída</div>}</td>
+          <td className="num">{numero(m.fora)}</td>
+          {(['ibs', 'cbs'] as const).map((e) => (
+            <td key={e}><SeloSituacaoTipo s={m[e].situacao} />{m[e].notas > 0 && <div className="dica">{numero(m[e].recebido)} de {numero(m[e].notas)} documento(s) recebido(s)</div>}</td>
+          ))}
+        </tr>
+      ))}</tbody>
+    </table></div>
+  );
+}
+
+type SubCobertura = 'ibs' | 'cbs' | 'casos' | 'modelos';
 
 function AbaCobertura({ poc, versao, aoMudar }: { poc: any; versao: number; aoMudar: () => void }) {
   const { usuario } = useSessao();
@@ -770,7 +790,7 @@ function AbaCobertura({ poc, versao, aoMudar }: { poc: any; versao: number; aoMu
         <div className="pilha">
           <div className="linha-flex">
             <strong className="cobertura-total">{numero(d.recebidos)} de {numero(d.meta)} tipos recebidos</strong>
-            <span className="dica">IBS {fracao(d.porEnte.ibs)} · CBS {fracao(d.porEnte.cbs)} · transporte e falha {fracao(d.porEnte.casos)}</span>
+            <span className="dica">IBS {fracao(d.porEnte.ibs)} · CBS {fracao(d.porEnte.cbs)} · transporte e falha {fracao(d.porEnte.casos)} · modelos nos dois entes {fracao(d.porEnte.modelos)}</span>
           </div>
           <div className="progresso" role="progressbar" aria-label="Tipos recebidos" aria-valuemin={0} aria-valuemax={d.meta} aria-valuenow={d.recebidos}>
             <span className="ok" style={{ width: pct(d.recebidos) }} /><span className="neutro" style={{ width: pct(noPlano) }} />
@@ -791,6 +811,7 @@ function AbaCobertura({ poc, versao, aoMudar }: { poc: any; versao: number; aoMu
           { id: 'ibs', rotulo: 'IBS', contagem: fracao(d.porEnte.ibs) },
           { id: 'cbs', rotulo: 'CBS', contagem: fracao(d.porEnte.cbs) },
           { id: 'casos', rotulo: 'Transporte e falha', contagem: fracao(d.porEnte.casos) },
+          { id: 'modelos', rotulo: 'Modelos', contagem: fracao(d.porEnte.modelos) },
         ]}
         ativa={sub}
         aoMudar={setSub}
@@ -799,6 +820,10 @@ function AbaCobertura({ poc, versao, aoMudar }: { poc: any; versao: number; aoMu
         {sub === 'ibs' && <TabelaTipos pocId={poc.id} linhas={d.ibs} />}
         {sub === 'cbs' && <TabelaTipos pocId={poc.id} linhas={d.cbs} />}
         {sub === 'casos' && <TabelaCasos poc={poc} casos={d.casos} leitor={leitor} aoMudar={mudou} />}
+        {sub === 'modelos' && <>
+          <p className="dica painel-corpo">Fora da meta dos tipos. O modelo conta quando o SplitHub baixou, nos dois entes, um arquivo com um documento dele. O plano leva primeiro o modelo que ainda não saiu num ente.</p>
+          <TabelaModelos linhas={d.modelos} />
+        </>}
       </Painel>
       {plano && <MontarPlano poc={poc} refazer={plano.refazer} aoFechar={() => setPlano(null)} aoAplicar={() => { setPlano(null); mudou(); }} />}
     </div>
