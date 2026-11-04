@@ -571,6 +571,28 @@ const MIGRACOES: string[] = [
   CREATE INDEX ibs_arquivo_eventos_evento ON ibs_arquivo_eventos (evento_id);
   INSERT INTO ibs_arquivo_eventos (arquivo_id, evento_id) SELECT arquivo_id, id FROM eventos WHERE ente = 'ibs' AND arquivo_id IS NOT NULL;
   `,
+  // 9 — Relógio automático da POC (D-MG-07): um dia simulado a cada intervalo, com pausa. dia_alvo é o dia que o próximo
+  // passo fecha; se o relógio já passou dele (por comando, ou porque o servidor caiu depois de fechar), o passo não fecha
+  // de novo. Sem linha, o relógio só anda por comando.
+  `
+  CREATE TABLE relogios (
+    poc_id TEXT PRIMARY KEY REFERENCES pocs(id) ON DELETE CASCADE,
+    estado TEXT NOT NULL CHECK (estado IN ('rodando', 'pausado')),
+    intervalo_seg INTEGER NOT NULL,
+    parar_em TEXT,
+    dia_alvo TEXT NOT NULL,
+    proximo_em TEXT,
+    passos INTEGER NOT NULL DEFAULT 0,
+    ultimo_passo_em TEXT,
+    ultimo_resumo TEXT,
+    ligado_por TEXT,
+    ligado_em TEXT,
+    pausado_por TEXT,
+    pausado_em TEXT,
+    motivo TEXT,
+    atualizado_em TEXT NOT NULL
+  );
+  `,
 ];
 
 function migrar(): void {

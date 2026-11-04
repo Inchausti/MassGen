@@ -60,6 +60,17 @@ Cada POC é um cliente e uma competência. O caminho, pelo menu **POCs**:
 10. **Relógio:** *Fechar o dia* processa os dois entes. No IBS, gera o Delta com os eventos planejados, gera o Arquivo Manual que o SplitHub pediu e avisa o webhook. Na CBS, com a `urlRetorno` validada, abre um tíquete por endpoint que mudou e avisa sem pedido (D-MG-03); sem ela, os eventos esperam o pedido. Depois passa ao dia seguinte. *Fechar até* faz isso dia a dia até a data. O relógio não volta. Embaixo do dia, o próximo dia com evento planejado em cada ente.
 
    > **Fechar vários dias de uma vez pode deixar um link vencer.** O link da CBS vale 48 horas no relógio da POC. Se o *Fechar até* passa dessas 48 horas antes de o SplitHub baixar, o link dos primeiros dias vence e os eventos ficam *não recebido*. É a regra, e vale testar. Para a POC andar sem isso, feche um dia por vez enquanto o SplitHub baixa. O que venceu volta por pedido.
+
+   **Avanço automático (D-MG-07):** em *Configuração › Relógio automático*, o relógio anda sozinho, um dia simulado a cada intervalo.
+   - **Ligar:** escolha o intervalo, em minutos reais por dia simulado (de 1 minuto a 24 horas), e a data de parada. A data de parada já vem com o último dia da competência; vazia, o relógio não para. O primeiro passo sai depois de um intervalo inteiro. Com 5 minutos, uma competência de 30 dias anda em duas horas e meia.
+   - **Cada passo é o *Fechar o dia*,** nos dois entes: o Delta e o Arquivo Manual do IBS, as fotos e o aviso sem pedido da CBS. Entram a defasagem da CBS e os casos ligados.
+   - **Um dia por passo:** o SplitHub tem o intervalo inteiro para baixar antes de o relógio andar de novo, e o link de 48 horas não vence no caminho.
+   - **Pausar e retomar,** no relógio do cabeçalho ou na Configuração. Pausar no meio de um passo deixa o dia dele fechar inteiro, com os avisos; o seguinte não sai. Retomar volta a contar o intervalo desde o clique. Depois do dia de parada, o relógio pausa sozinho e diz por quê.
+   - **Comando conta como passo:** se você fecha o dia na mão (*Fechar o dia*, *Fechar até*, *Executar e enviar*), o passo seguinte não fecha de novo o mesmo dia. Ele espera um intervalo inteiro e fecha o dia em que o relógio está.
+   - **Reinício do servidor:** o relógio volta sozinho, assim que o app está no ar. O passo que venceu com o servidor fora sai uma vez só; os intervalos perdidos não viram vários dias de uma vez. Se o servidor caiu logo depois de fechar um dia, esse dia não fecha de novo.
+   - **Tela:** o cabeçalho mostra o estado e o próximo passo, com a hora, a contagem e o dia que ele fecha. Enquanto o relógio roda, a página se atualiza sozinha.
+   - **Trilha:** registra quem ligou, pausou, retomou e mudou o intervalo. Cada passo entra como *relógio automático (ligado por …)*.
+   - **Intervalo mínimo:** 1 minuto. `MASSGEN_RELOGIO_MIN_SEG` muda esse mínimo; os testes usam 1 segundo.
 11. **Barramento:** um painel por ente.
    - **IBS:** a credencial, a habilitação, e as solicitações com os arquivos (o JSON do Anexo I e o ZIP). Cada solicitação diz se é Delta ou Arquivo Manual (com o período) e qual caso foi provocado nela.
    - **Arquivo Manual:** o SplitHub pede em `GET /v1/aassist/solicitacao/incluir`, com `cnpj`, `dataTransacaoIni` e `dataTransacaoFim`, e cancela em `DELETE /v1/aassist/solicitacao/cancelamento/{idSolic}` enquanto a solicitação está *SOLICITADA*. Veja as [regras](#decisões-do-emulador-onde-o-moc-ainda-não-define-ibs).
@@ -470,6 +481,7 @@ server/
     cbs.ts           tíquetes da CBS: seleção pela janela ou pelo dia, link assinado, vencimento, download
     cobertura.ts     plano automático, troca de roteiro e painel de cobertura dos 59 tipos, com o XML que falta
     casos.ts         os casos de transporte e falha (T01 a T09): ligar, armar, provocar e quando cada um fecha
+    relogio-automatico.ts  o relógio que anda sozinho (D-MG-07): um dia por passo, pausa, data de parada e retomada na subida
   entes/       rotas dos entes emulados (/entes/ibs e /entes/cbs) e as collections do Postman
     cbs.ts           Receita Federal emulada: token, pedido, situação, download, urlRetorno e aviso
   core/        núcleo genérico: geradores, regras (JSONata), geração, conferência
@@ -516,6 +528,13 @@ Os testes de ponta a ponta sobem o app e a API falsa e conferem:
   - as regras do Arquivo Manual, o cancelamento e a entrega no Processamento Diário seguinte (T04, T06, T07);
   - a troca de roteiro de uma nota que já tem história;
   - as collections dos dois entes;
+- o relógio automático ([tests/relogio.test.ts](tests/relogio.test.ts)), com o intervalo de 1 segundo e um SplitHub falso que baixa o que chega:
+  - um dia por passo nos dois entes, com a defasagem da CBS, os avisos e nenhum link vencido;
+  - a data de parada;
+  - quem ligou, pausou e retomou, na trilha;
+  - o dia fechado por comando, que o passo não fecha de novo;
+  - o reinício do servidor, inclusive depois de uma queda entre o fechamento do dia e a anotação do passo;
+  - a POC apagada com o relógio rodando;
 - o primeiro acesso do root, o convite, os papéis, a sessão vencida, a desativação e o bloqueio de login;
 - o cenário C-01 e os casos de borda do C-05;
 - a idempotência;

@@ -36,7 +36,11 @@ import { CAMPOS, CATALOGO_IBS, ROTEIROS } from './emulacao/catalogo.ts';
 import { CAMPOS_CBS, CATALOGO_CBS, DERIVADOS_CBS } from './emulacao/catalogo-cbs.ts';
 import { gravarEnvioManual, obterPoc, planejarEnvio } from './emulacao/execucao.ts';
 import { aplicarRoteiro, planejarRoteiro } from './emulacao/plano.ts';
-import { fecharDia } from './emulacao/relogio.ts';
+import { auditarFechamento, fecharDia } from './emulacao/relogio.ts';
+import {
+  configurar as configurarRelogio, duracao, esquecer as esquecerRelogio, ligar as ligarRelogio, pausar as pausarRelogio, retomar as retomarRelogio,
+  type RelogioLigado,
+} from './emulacao/relogio-automatico.ts';
 import { aplicarPlano, cobertura, previaPlano, previaTroca, trocarRoteiro } from './emulacao/cobertura.ts';
 import { CASOS, definirCaso } from './emulacao/casos.ts';
 import { zipDoArquivo } from './emulacao/arquivo-ibs.ts';
@@ -473,11 +477,12 @@ rotas.get('/api/pocs/:id', ({ params }) => detalharPoc(params.id));
 rotas.put('/api/pocs/:id', ({ params, corpo }) => {
   const antes = detalharPoc(params.id);
   const p = atualizarPoc(params.id, corpo ?? {});
-  auditar('poc.alterar', `POC ${p.nome} alterada`, { alvoTipo: 'poc', alvoId: p.id, detalhes: mudancas(antes as never, p as never, ['eventos', 'eventosPorEnte', 'notas', 'ibs', 'cbs']) });
+  auditar('poc.alterar', `POC ${p.nome} alterada`, { alvoTipo: 'poc', alvoId: p.id, detalhes: mudancas(antes as never, p as never, ['eventos', 'eventosPorEnte', 'notas', 'ibs', 'cbs', 'relogioAuto']) });
   return p;
 });
 rotas.delete('/api/pocs/:id', ({ params }) => {
   const r = removerPoc(params.id);
+  esquecerRelogio(params.id);
   auditar('poc.remover', `POC ${r.nome} apagada com ${r.notas} nota(s) do cliente, os eventos, os arquivos e os avisos`, { alvoTipo: 'poc', alvoId: params.id, detalhes: r });
 }, SO_ROOT);
 rotas.post('/api/pocs/:id/credencial-ibs', ({ params }) => {
@@ -597,16 +602,41 @@ rotas.put('/api/pocs/:id/casos/:caso', ({ params, corpo, quem }) => {
 rotas.post('/api/pocs/:id/relogio/fechar', async ({ params, corpo }) => {
   const antes = obterPoc(params.id).dia;
   const r = await fecharDia(params.id, txt(corpo?.ate ?? null));
-  const tiquetes = r.cbs.flatMap((c) => c.tiquetes);
-  const deltas = r.processados.filter((p) => p.tipo === 'DIFERENCIAL' && !p.semDelta).length;
-  const manuais = r.processados.filter((p) => p.tipo === 'MANUAL').length;
-  auditar('poc.relogio', `Relógio da POC ${obterPoc(params.id).nome} foi de ${antes} a ${r.dia}: ${deltas} Delta(s) e ${manuais} Arquivo(s) Manual(is) do IBS e ${tiquetes.length} aviso(s) sem pedido da CBS`, {
-    alvoTipo: 'poc', alvoId: params.id, detalhes: {
-      de: antes, para: r.dia, deltas: r.processados.map((p) => ({ dia: p.dia, tipo: p.tipo, idSolic: p.idSolic, arquivos: p.arquivos.length, aviso: p.aviso?.resultado, semDelta: p.semDelta, provocado: p.provocado?.caso })),
-      cbs: r.cbs.map((c) => ({ dia: c.dia, eventos: c.eventos, tiquetes: c.tiquetes.map((t, i) => ({ endpoint: t.endpoint, documentos: t.documentos, aviso: c.avisos[i]?.resultado })) })),
-    },
+  auditarFechamento(params.id, antes, r);
+  return r;
+});
+
+// Relógio automático (D-MG-07): um dia simulado a cada intervalo, como o Fechar o dia. Quem liga, pausa, retoma e muda
+// o intervalo fica na trilha; o passo entra nela como "relógio automático (ligado por ...)".
+const opcoesRelogio = (corpo: any) => ({ intervaloSeg: corpo?.intervaloSeg, pararEm: corpo?.pararEm });
+const textoRelogio = (r: RelogioLigado) => `1 dia simulado a cada ${duracao(r.intervaloSeg)}${r.pararEm ? `, até ${r.pararEm}` : ', sem data de parada'}`;
+const detalhesRelogio = (acao: string, r: RelogioLigado) => ({ acao, intervaloSeg: r.intervaloSeg, pararEm: r.pararEm, diaAlvo: r.diaAlvo, proximoEm: r.proximoEm });
+rotas.post('/api/pocs/:id/relogio/automatico/ligar', ({ params, corpo, quem }) => {
+  const r = ligarRelogio(params.id, opcoesRelogio(corpo), quem!.usuario);
+  auditar('poc.relogio_auto', `Relógio automático da POC ${obterPoc(params.id).nome} ligado: ${textoRelogio(r)}; o primeiro passo fecha ${r.diaAlvo}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: detalhesRelogio('ligar', r),
   });
   return r;
+});
+rotas.post('/api/pocs/:id/relogio/automatico/pausar', ({ params, quem }) => {
+  const r = pausarRelogio(params.id, quem!.usuario);
+  const poc = obterPoc(params.id);
+  auditar('poc.relogio_auto', `Relógio automático da POC ${poc.nome} pausado no dia ${poc.dia}`, { alvoTipo: 'poc', alvoId: params.id, detalhes: { acao: 'pausar', dia: poc.dia, passos: r.passos } });
+  return r;
+});
+rotas.post('/api/pocs/:id/relogio/automatico/retomar', ({ params, corpo, quem }) => {
+  const r = retomarRelogio(params.id, opcoesRelogio(corpo), quem!.usuario);
+  auditar('poc.relogio_auto', `Relógio automático da POC ${obterPoc(params.id).nome} retomado: ${textoRelogio(r)}; o próximo passo fecha ${r.diaAlvo}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: detalhesRelogio('retomar', r),
+  });
+  return r;
+});
+rotas.put('/api/pocs/:id/relogio/automatico', ({ params, corpo }) => {
+  const { antes, relogio } = configurarRelogio(params.id, opcoesRelogio(corpo));
+  auditar('poc.relogio_auto', `Relógio automático da POC ${obterPoc(params.id).nome} alterado: ${textoRelogio(relogio)}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { ...detalhesRelogio('alterar', relogio), antes },
+  });
+  return relogio;
 });
 
 rotas.get('/api/pocs/:id/barramento', ({ params }) => barramento(params.id));

@@ -13,6 +13,7 @@ import { marcarInterrompidas } from './servicos/execucoes.ts';
 import { auditar } from './auditoria.ts';
 import { existeRoot, garantirRoots } from './usuarios.ts';
 import { garantirAmbientes } from './servicos/ambientes.ts';
+import { retomarNaSubida } from './emulacao/relogio-automatico.ts';
 
 const TIPOS: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -67,6 +68,10 @@ servidor.listen({ port: config.porta, host: config.host }, () => {
   // Roots sem senha: o link de primeiro acesso só aparece aqui, no console do servidor (válido por 24 h; cada subida gera um novo).
   for (const p of primeirosAcessos) console.log(`Primeiro acesso de ${p.email}: ${p.link}`);
   if (!existeRoot()) console.warn('Nenhum root cadastrado, e ninguém consegue entrar. Defina MASSGEN_ROOTS no .env (e-mails separados por vírgula) e reinicie.');
+  // Relógios automáticos das POCs (D-MG-07): voltam ao agendamento só agora, com o app escutando, porque o SplitHub baixa
+  // daqui o que cada passo avisa.
+  const relogios = retomarNaSubida();
+  if (relogios) console.log(`Relógio automático retomado em ${relogios} POC(s).`);
   if (config.confiarCloudflareAccess) {
     console.log('Identidade pelo Cloudflare Access: o e-mail autenticado entra na trilha de auditoria.');
     if (!config.host || !LOOPBACK(config.host)) {

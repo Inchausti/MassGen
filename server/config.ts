@@ -46,6 +46,8 @@ export const config = {
   sessaoHoras: Number(process.env.MASSGEN_SESSAO_HORAS || 12),
   // Espera entre as tentativas do aviso ao webhook do SplitHub, em ms. "2000,5000": três tentativas.
   avisoEsperasMs: (process.env.MASSGEN_AVISO_ESPERAS_MS || '2000,5000').split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x >= 0),
+  // Menor intervalo do relógio automático da POC, em segundos. Os testes usam 1.
+  relogioMinSeg: Math.max(1, Number(process.env.MASSGEN_RELOGIO_MIN_SEG || 60) || 60),
 };
 
 function casa(host: string, regra: string): boolean {

@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { agora, executar, json, novoId, todos, transacao, um } from '../db.ts';
 import { ErroHttp } from '../http.ts';
-import { usuarioAtual } from '../auditoria.ts';
+import { auditar, usuarioAtual } from '../auditoria.ts';
 import { cabecalhoOperacao, fatiar, hashExtrato, linhaMoc, montarArquivo, nomeBase, zipDoArquivo, type Fatia, type OperacaoDoDia } from './arquivo-ibs.ts';
 import { avisarSolicitacao, type ResultadoAviso } from '../entes/ibs.ts';
 import { avisarTiquete } from '../entes/cbs.ts';
@@ -179,44 +179,83 @@ function expirar(pocId: string, dia: string): void {
   }
 }
 
-// Um comando de cada vez por POC: dois "fechar o dia" ao mesmo tempo não processam o mesmo dia duas vezes.
+// Um comando de cada vez por POC: dois "fechar o dia" ao mesmo tempo, ou o comando e o passo do relógio automático,
+// não processam o mesmo dia duas vezes.
 const filas = new Map<string, Promise<unknown>>();
+
+function naFila<T>(pocId: string, fn: () => Promise<T>): Promise<T> {
+  const anterior = filas.get(pocId) ?? Promise.resolve();
+  const atual = anterior.catch(() => undefined).then(fn);
+  filas.set(pocId, atual);
+  return atual.finally(() => { if (filas.get(pocId) === atual) filas.delete(pocId); });
+}
 
 export interface ProcessamentoCbsAvisado extends ProcessamentoCbs { avisos: ResultadoAviso[] }
 
 // processados é o IBS (o Delta de cada dia com lançamentos e os Arquivos Manuais gerados); cbs, os dias em que a base
 // da Receita Federal emulada mudou.
-export function fecharDia(pocId: string, ate?: string): Promise<{ dia: string; processados: Processamento[]; cbs: ProcessamentoCbsAvisado[]; diasFechados: number }> {
-  const anterior = filas.get(pocId) ?? Promise.resolve();
-  const atual = anterior.catch(() => undefined).then(async () => {
+export interface Fechamento { dia: string; processados: Processamento[]; cbs: ProcessamentoCbsAvisado[]; diasFechados: number }
+
+// Fecha dia a dia, de "de" até "ate" (inclusive): processa os dois entes, vence o que passou da validade e avisa.
+async function fecharDias(pocId: string, de: string, ate: string): Promise<Fechamento> {
+  const processados: Processamento[] = [];
+  const cbs: ProcessamentoCbsAvisado[] = [];
+  let dias = 0;
+  for (let dia = de; dia <= ate; dia = somarDias(dia, 1)) {
+    const r = processarDia(pocId, dia);
+    if (r === undefined) continue;
+    dias++;
+    expirar(pocId, somarDias(dia, 1));
+    expirarTiquetes(pocId, somarDias(dia, 1));
+    for (const p of [r.ibs, ...r.manuais]) {
+      if (!p) continue;
+      if (p.solicitacaoId) p.aviso = await avisarSolicitacao(pocId, p.solicitacaoId);
+      processados.push(p);
+    }
+    if (r.cbs) {
+      // Aviso sem pedido (D-MG-03): um por endpoint que mudou, na urlRetorno validada da POC.
+      const avisos: ResultadoAviso[] = [];
+      for (const t of r.cbs.tiquetes) avisos.push(await avisarTiquete(pocId, t.id));
+      cbs.push({ ...r.cbs, avisos });
+    }
+  }
+  return { dia: obterPoc(pocId).dia, processados, cbs, diasFechados: dias };
+}
+
+export function fecharDia(pocId: string, ate?: string): Promise<Fechamento> {
+  return naFila(pocId, async () => {
     const poc = obterPoc(pocId);
     const alvo = ate ?? poc.dia;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(alvo)) throw new ErroHttp(400, 'Use a data no formato AAAA-MM-DD.');
     if (alvo < poc.dia) throw new ErroHttp(409, `O relógio já está em ${poc.dia}; ele não volta.`);
     if (alvo > somarDias(poc.dia, MAX_DIAS_POR_COMANDO)) throw new ErroHttp(400, `Feche no máximo ${MAX_DIAS_POR_COMANDO} dias por comando.`);
-    const processados: Processamento[] = [];
-    const cbs: ProcessamentoCbsAvisado[] = [];
-    let dias = 0;
-    for (let dia = poc.dia; dia <= alvo; dia = somarDias(dia, 1)) {
-      const r = processarDia(pocId, dia);
-      if (r === undefined) continue;
-      dias++;
-      expirar(pocId, somarDias(dia, 1));
-      expirarTiquetes(pocId, somarDias(dia, 1));
-      for (const p of [r.ibs, ...r.manuais]) {
-        if (!p) continue;
-        if (p.solicitacaoId) p.aviso = await avisarSolicitacao(pocId, p.solicitacaoId);
-        processados.push(p);
-      }
-      if (r.cbs) {
-        // Aviso sem pedido (D-MG-03): um por endpoint que mudou, na urlRetorno validada da POC.
-        const avisos: ResultadoAviso[] = [];
-        for (const t of r.cbs.tiquetes) avisos.push(await avisarTiquete(pocId, t.id));
-        cbs.push({ ...r.cbs, avisos });
-      }
-    }
-    return { dia: obterPoc(pocId).dia, processados, cbs, diasFechados: dias };
+    return fecharDias(pocId, poc.dia, alvo);
   });
-  filas.set(pocId, atual);
-  return atual.finally(() => { if (filas.get(pocId) === atual) filas.delete(pocId); });
+}
+
+// O passo do relógio automático (D-MG-07): fecha só o dia esperado, um por passo. Se o relógio já passou dele (um comando
+// fechou antes, ou o servidor caiu depois de fechar), não fecha nada: o mesmo dia nunca fecha duas vezes.
+export function fecharDiaEsperado(pocId: string, dia: string): Promise<Fechamento | null> {
+  return naFila(pocId, async () => (obterPoc(pocId).dia === dia ? fecharDias(pocId, dia, dia) : null));
+}
+
+// O que o fechamento fez, numa frase, e a linha da trilha. O comando e o passo automático usam a mesma.
+export function contarFechamento(r: Fechamento) {
+  return {
+    deltas: r.processados.filter((p) => p.tipo === 'DIFERENCIAL' && !p.semDelta).length,
+    manuais: r.processados.filter((p) => p.tipo === 'MANUAL').length,
+    tiquetes: r.cbs.reduce((s, c) => s + c.tiquetes.length, 0),
+  };
+}
+
+export function auditarFechamento(pocId: string, antes: string, r: Fechamento, automatico?: { intervaloSeg: number }): void {
+  const { deltas, manuais, tiquetes } = contarFechamento(r);
+  const quem = automatico ? 'O relógio automático da POC' : 'Relógio da POC';
+  auditar('poc.relogio', `${quem} ${obterPoc(pocId).nome} foi de ${antes} a ${r.dia}: ${deltas} Delta(s) e ${manuais} Arquivo(s) Manual(is) do IBS e ${tiquetes} aviso(s) sem pedido da CBS`, {
+    alvoTipo: 'poc', alvoId: pocId, detalhes: {
+      de: antes, para: r.dia, ...(automatico ? { automatico: true, intervaloSeg: automatico.intervaloSeg } : {}),
+      deltas: r.processados.map((p) => ({ dia: p.dia, tipo: p.tipo, idSolic: p.idSolic, arquivos: p.arquivos.length, aviso: p.aviso?.resultado, semDelta: p.semDelta, provocado: p.provocado?.caso })),
+      cbs: r.cbs.map((c) => ({ dia: c.dia, eventos: c.eventos, tiquetes: c.tiquetes.map((t, i) => ({ endpoint: t.endpoint, documentos: t.documentos, aviso: c.avisos[i]?.resultado })) })),
+    },
+  });
 }

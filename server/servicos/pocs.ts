@@ -13,6 +13,7 @@ import { fotoCredito, fotoDebito, registroPagamento, type DadosCbs, type EventoC
 import { expirou, type TiqueteRow } from '../emulacao/cbs.ts';
 import { carregarEstado, obterPoc, rotuloNota, saldoDe, type NotaRow, type PocRow } from '../emulacao/execucao.ts';
 import { DEFASAGEM_MAX } from '../emulacao/plano.ts';
+import { estadoRelogio } from '../emulacao/relogio-automatico.ts';
 import { lerDocumento, raizCnpj, type CancelamentoLido, type NotaLida } from '../emulacao/xml.ts';
 import { ehZip, lerZip } from '../emulacao/zip.ts';
 import { PREFIXO_IBS, tentativasDoAviso, type ArquivoRow } from '../entes/ibs.ts';
@@ -37,6 +38,7 @@ function resumo(p: PocRow) {
     id: p.id, nome: p.nome, cnpj: p.cnpj, cnpjRaiz: p.cnpj_raiz, competencia: p.competencia, dia: p.dia, ambienteId: p.ambiente_id,
     limitesRelaxados: !!p.limites_relaxados, lancamentosPorArquivo: p.lancamentos_por_arquivo, defasagemCbs: p.defasagem_cbs ?? 0, criadoPor: p.criado_por, criadoEm: p.criado_em,
     proximos: { ibs: proximos.ibs ?? null, cbs: proximos.cbs ?? null },
+    relogioAuto: estadoRelogio(p.id),
     notas: { aceitas: n.aceitas ?? 0, fora: n.fora ?? 0, entrada: n.entrada ?? 0, saida: n.saida ?? 0 },
     eventos: somar(ev),
     eventosPorEnte: { ibs: somar(ev.filter((e) => e.ente === 'ibs')), cbs: somar(ev.filter((e) => e.ente === 'cbs')) },

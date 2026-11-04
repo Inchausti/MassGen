@@ -1,7 +1,7 @@
 // POC da apuração assistida (proposta v4.3): o cliente e a competência, as notas dele, o envio sob demanda,
 // o barramento dos dois entes emulados (Comitê Gestor no IBS, Receita Federal na CBS) e os envios. O relógio é o dia
 // simulado da POC.
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { baixar, del, get, post, put } from '../api.ts';
 import { Link, useRota } from '../rotas.tsx';
 import { useSessao } from '../sessao.tsx';
@@ -163,7 +163,7 @@ export function Pocs() {
                 <tr key={p.id} className="clicavel" onClick={() => navegar(`/pocs/${p.id}`)}>
                   <td><Link para={`/pocs/${p.id}`}>{p.nome}</Link><div className="dica">{quando(p.criadoEm)}</div></td>
                   <td><span className="mono">{p.cnpjRaiz}</span><div className="dica">competência {competenciaBr(p.competencia)}</div></td>
-                  <td className="nowrap">{diaBr(p.dia)}</td>
+                  <td className="nowrap">{diaBr(p.dia)}{p.relogioAuto?.estado === 'rodando' ? <div className="dica">automático, 1 dia a cada {duracaoBr(p.relogioAuto.intervaloSeg)}</div> : p.relogioAuto?.estado === 'pausado' ? <div className="dica">automático pausado</div> : null}</td>
                   <td className="num">{numero(p.notas.aceitas)}<div className="dica">{numero(p.notas.entrada)} entrada · {numero(p.notas.saida)} saída</div></td>
                   <td className="num">{numero(ev.recebido)}<div className="dica">IBS {numero(p.eventosPorEnte?.ibs?.recebido)} · CBS {numero(p.eventosPorEnte?.cbs?.recebido)}</div></td>
                   <td className="num">{pendentes ? <span style={{ color: 'var(--aviso)' }}>{numero(pendentes)}</span> : '0'}{ev.planejado ? <div className="dica">{numero(ev.planejado)} planejado(s)</div> : null}</td>
@@ -183,6 +183,129 @@ export function Pocs() {
 // ---------------------------------------------------------------- detalhe
 
 type Aba = 'notas' | 'cobertura' | 'enviar' | 'barramento' | 'envios' | 'config';
+
+// ---------------------------------------------------------------- relógio automático (D-MG-07)
+
+export const duracaoBr = (seg?: number | null) => {
+  const s = seg ?? 0;
+  if (s >= 3600 && s % 3600 === 0) return `${s / 3600} h`;
+  if (s >= 60 && s % 60 === 0) return `${s / 60} min`;
+  return s > 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
+};
+const horaBr = (iso?: string | null) => (iso ? new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
+const faltaBr = (iso: string, agora: number) => {
+  const s = Math.max(0, Math.round((Date.parse(iso) - agora) / 1000));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+  return `${Math.floor(s / 3600)} h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')} min`;
+};
+// O último dia da competência: o padrão da data de parada.
+const fimDaCompetencia = (c: string) => new Date(Date.UTC(Number(c.slice(0, 4)), Number(c.slice(5, 7)), 0)).toISOString().slice(0, 10);
+
+// Re-renderiza a cada segundo enquanto ativo, para a contagem até o próximo passo.
+function useAgora(ativo: boolean): number {
+  const [agora, setAgora] = useState(() => Date.now());
+  useEffect(() => {
+    if (!ativo) return;
+    setAgora(Date.now());
+    const t = setInterval(() => setAgora(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ativo]);
+  return agora;
+}
+
+// O próximo passo do relógio automático, numa linha: quando sai e que dia fecha.
+function ProximoPasso({ auto, curto }: { auto: any; curto?: boolean }) {
+  const agora = useAgora(auto.estado === 'rodando');
+  if (auto.emAndamento || (auto.proximoEm && Date.parse(auto.proximoEm) <= agora)) return <span>fechando {diaCurto(auto.diaAlvo)}…</span>;
+  if (!auto.proximoEm) return null;
+  return <span>{curto ? 'às' : 'próximo passo às'} <strong className="mono">{horaBr(auto.proximoEm)}</strong> (em {faltaBr(auto.proximoEm, agora)}), fecha {diaCurto(auto.diaAlvo)}</span>;
+}
+
+function RelogioAutomatico({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
+  const { usuario } = useSessao();
+  const { navegar } = useRota();
+  const acao = useAcao();
+  const auto = poc.relogioAuto ?? { estado: 'desligado' };
+  const pode = usuario.papel !== 'leitor';
+  const comando = async (qual: 'pausar' | 'retomar') => {
+    const r = await acao.executar(() => post(`/pocs/${poc.id}/relogio/automatico/${qual}`, {}), qual === 'pausar' ? 'Relógio automático pausado.' : 'Relógio automático retomado.');
+    if (r) aoMudar();
+  };
+  if (auto.estado === 'desligado') {
+    return pode ? <div className="relogio-auto"><button className="botao fantasma pequeno" onClick={() => navegar(`/pocs/${poc.id}?aba=config`, true)} title="Um dia simulado a cada intervalo, com pausa (D-MG-07)">Avanço automático…</button></div> : null;
+  }
+  if (auto.estado === 'pausado') {
+    return (
+      <div className="relogio-auto">
+        <span className="selo aviso">Automático pausado</span>
+        <span className="dica">{auto.motivo ? `pausou sozinho: ${auto.motivo}` : `por ${auto.pausadoPor ?? '—'}`}</span>
+        {pode && <button className="botao pequeno" disabled={acao.ocupado} onClick={() => comando('retomar')} title={`Volta a fechar 1 dia a cada ${duracaoBr(auto.intervaloSeg)}; o primeiro passo depois de um intervalo inteiro`}>Retomar</button>}
+      </div>
+    );
+  }
+  return (
+    <div className="relogio-auto">
+      <span className="selo ok" title={`Ligado por ${auto.ligadoPor ?? '—'} em ${quando(auto.ligadoEm)}`}>Automático</span>
+      <span className="dica">1 dia a cada {duracaoBr(auto.intervaloSeg)} · <ProximoPasso auto={auto} /></span>
+      {pode && <button className="botao pequeno" disabled={acao.ocupado} onClick={() => comando('pausar')} title="Para depois do passo em andamento; o dia dele fecha inteiro, com os avisos">Pausar</button>}
+    </div>
+  );
+}
+
+function PainelRelogioAutomatico({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
+  const { usuario } = useSessao();
+  const acao = useAcao();
+  const auto = poc.relogioAuto ?? { estado: 'desligado', limites: { minSeg: 60, maxSeg: 86400 } };
+  const leitor = usuario.papel === 'leitor';
+  const fim = fimDaCompetencia(poc.competencia);
+  const inicial = () => ({
+    minutos: auto.intervaloSeg ? String(Math.round((auto.intervaloSeg / 60) * 100) / 100) : '5',
+    pararEm: auto.estado === 'desligado' ? (poc.dia <= fim ? fim : '') : auto.pararEm ?? '',
+  });
+  const [f, setF] = useState(inicial);
+  // Volta ao que está gravado quando o estado muda (ligar, pausar sozinho, outra pessoa mexeu).
+  useEffect(() => setF(inicial()), [auto.estado, auto.intervaloSeg, auto.pararEm]); // eslint-disable-line react-hooks/exhaustive-deps
+  const intervaloSeg = Math.round(Number(f.minutos) * 60);
+  const corpo = { intervaloSeg, pararEm: f.pararEm || null };
+  const mudou = auto.estado !== 'desligado' && (intervaloSeg !== auto.intervaloSeg || (f.pararEm || null) !== (auto.pararEm ?? null));
+  const executar = async (fn: () => Promise<unknown>, ok: string) => { if ((await acao.executar(fn, ok)) !== undefined) aoMudar(); };
+  const base = `/pocs/${poc.id}/relogio/automatico`;
+  const seloEstado = auto.estado === 'rodando' ? <span className="selo ok">Rodando</span> : auto.estado === 'pausado' ? <span className="selo aviso">Pausado</span> : <span className="selo">Desligado</span>;
+  return (
+    <Painel titulo="Relógio automático" acoes={seloEstado}>
+      <div className="pilha">
+        <CaixaErro erro={acao.erro} />
+        <p className="dica">Cada passo é o <em>Fechar o dia</em>, nos dois entes: o Delta e o Arquivo Manual do IBS, as fotos e o aviso sem pedido da CBS, com a defasagem e os casos ligados. Um passo fecha um dia só: o link da CBS vale 48 horas no relógio, e o SplitHub tem o intervalo inteiro para baixar. Fechar o dia por comando conta como passo, e o seguinte espera um intervalo inteiro. Se o servidor reiniciar, o relógio volta sozinho, sem fechar de novo o dia que já fechou (D-MG-07).</p>
+        <div className="grade grade-2">
+          <Campo rotulo="Intervalo, em minutos reais por dia simulado" ajuda={`De ${duracaoBr(auto.limites?.minSeg)} a ${duracaoBr(auto.limites?.maxSeg)}. Com 5 minutos, uma competência de 30 dias anda em duas horas e meia.`}>
+            <input type="number" min={(auto.limites?.minSeg ?? 60) / 60} max={(auto.limites?.maxSeg ?? 86400) / 60} step="any" value={f.minutos} disabled={leitor} onChange={(e) => setF({ ...f, minutos: e.target.value })} />
+          </Campo>
+          <Campo rotulo="Parar em" ajuda="O último dia que o relógio fecha sozinho; depois ele pausa. Vazio: sem parada.">
+            <input type="date" min={poc.dia} value={f.pararEm} disabled={leitor} onChange={(e) => setF({ ...f, pararEm: e.target.value })} />
+          </Campo>
+        </div>
+        {!leitor && (
+          <div className="linha-flex">
+            {auto.estado === 'desligado' && <button className="botao primario" disabled={acao.ocupado} onClick={() => executar(() => post(`${base}/ligar`, corpo), 'Relógio automático ligado.')}>Ligar</button>}
+            {auto.estado === 'rodando' && <button className="botao" disabled={acao.ocupado} onClick={() => executar(() => post(`${base}/pausar`, {}), 'Relógio automático pausado.')}>Pausar</button>}
+            {auto.estado === 'pausado' && <button className="botao primario" disabled={acao.ocupado} onClick={() => executar(() => post(`${base}/retomar`, corpo), 'Relógio automático retomado.')}>Retomar</button>}
+            {mudou && <button className="botao" disabled={acao.ocupado} onClick={() => executar(() => put(base, corpo), 'Relógio automático alterado.')}>Salvar sem {auto.estado === 'rodando' ? 'pausar' : 'retomar'}</button>}
+          </div>
+        )}
+        {auto.estado !== 'desligado' && (
+          <dl className="kv">
+            {auto.estado === 'rodando' && <><dt>Próximo passo</dt><dd><ProximoPasso auto={auto} curto /></dd></>}
+            {auto.estado === 'pausado' && <><dt>Pausado</dt><dd>{quando(auto.pausadoEm)} · {auto.pausadoPor}{auto.motivo && <div className="dica">pausou sozinho: {auto.motivo}</div>}</dd></>}
+            <dt>{auto.estado === 'rodando' ? 'Ligado' : 'Ligado por último'}</dt><dd>{quando(auto.ligadoEm)} · {auto.ligadoPor}</dd>
+            <dt>Passos</dt><dd>{numero(auto.passos)}{auto.ultimoPassoEm && <span className="dica"> · o último às {horaBr(auto.ultimoPassoEm)}</span>}</dd>
+            {auto.ultimoResumo && <><dt>Último passo</dt><dd>{auto.ultimoResumo}</dd></>}
+          </dl>
+        )}
+      </div>
+    </Painel>
+  );
+}
 
 function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   const { usuario } = useSessao();
@@ -209,6 +332,7 @@ function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
         <button className="botao" disabled={acao.ocupado || !ate} onClick={() => fechar({ ate })}
           title="Fecha cada dia até a data, inclusive. Na CBS, o link vale 48 horas no relógio: fechar muitos dias de uma vez pode vencer um link que o SplitHub ainda não baixou; a coleta por pedido recupera">Fechar até</button>
       </>}
+      <RelogioAutomatico poc={poc} aoMudar={aoMudar} />
     </div>
   );
 }
@@ -219,7 +343,22 @@ export function PocDetalhe({ id }: { id: string }) {
   const catalogo = useCarregar(() => get('/catalogo/eventos'), []);
   const [versao, setVersao] = useState(0);
   const aba = (busca.get('aba') as Aba) || 'notas';
-  const mudou = () => { setVersao((v) => v + 1); poc.recarregar(true); };
+  // diaVisto: com o relógio automático rodando, a tela relê a POC sozinha, e o dia novo recarrega a aba aberta. A ação
+  // feita aqui já recarrega; zerar o diaVisto evita a segunda leitura.
+  const diaVisto = useRef<string | undefined>(undefined);
+  const mudou = () => { diaVisto.current = undefined; setVersao((v) => v + 1); poc.recarregar(true); };
+  const auto = poc.dados?.relogioAuto;
+  const rodando = auto?.estado === 'rodando';
+  useEffect(() => {
+    if (!rodando) return;
+    const t = setInterval(() => poc.recarregar(true), Math.min(5000, Math.max(1000, (auto?.intervaloSeg ?? 60) * 500)));
+    return () => clearInterval(t);
+  }, [rodando, auto?.intervaloSeg]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const dia = poc.dados?.dia;
+    if (diaVisto.current && dia && dia !== diaVisto.current) setVersao((v) => v + 1);
+    diaVisto.current = dia;
+  }, [poc.dados?.dia]);
   const p = poc.dados;
   if (!p) return <div className="pagina">{poc.erro ? <CaixaErro erro={poc.erro} /> : <Carregando />}</div>;
   const ev = p.eventos ?? {};
@@ -1165,6 +1304,7 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
           <dt>Criada</dt><dd>{quando(poc.criadoEm)} · {poc.criadoPor}</dd>
         </dl>
       </Painel>
+      <PainelRelogioAutomatico poc={poc} aoMudar={aoMudar} />
       {usuario.papel === 'root' && (
         <Painel titulo="Fim da POC">
           <div className="linha-flex">
