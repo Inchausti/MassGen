@@ -14,8 +14,9 @@ import {
   LIMITE_POR_DIA, abrirPedido, assinaturaDe, expirou, marcarProcessando, pedidosNoDia, processarPedido, registrarDownloadCbs, tiquetePorAssinatura,
   type TiqueteRow,
 } from '../emulacao/cbs.ts';
+import { armado, registrarInjecao } from '../emulacao/casos.ts';
 import { obterPoc, type PocRow } from '../emulacao/execucao.ts';
-import { entes, segredoConfere, type ResultadoAviso } from './ibs.ts';
+import { T09_DESCARTE, entes, segredoConfere, type ResultadoAviso } from './ibs.ts';
 
 export const PREFIXO_CBS = '/entes/cbs';
 export const urlCbs = () => `${config.urlPublica}${PREFIXO_CBS}`;
@@ -150,7 +151,8 @@ async function atender(tiqueteId: string): Promise<void> {
     if (!marcarProcessando(tiqueteId)) return;
     await esperar(PROCESSAMENTO_MS / 2);
     const t = processarPedido(tiqueteId);
-    if (t?.estado === 'CONCLUIDA') await avisarTiquete(t.poc_id, t.id);
+    // O erro também vai para a urlRetorno, com o codigoErro no lugar do link (caso T03).
+    if (t?.estado === 'CONCLUIDA' || t?.estado === 'ERRO') await avisarTiquete(t.poc_id, t.id);
   } catch (e) {
     // A POC pode ter sido apagada no meio do atendimento.
     if (um('SELECT 1 FROM cbs_tiquetes WHERE id = ?', tiqueteId)) console.error(e);
@@ -224,7 +226,11 @@ export async function avisarTiquete(pocId: string, tiqueteId: string, opcoes: { 
     executar('UPDATE avisos SET tentativas = ?, status = ?, resultado = ?, erro = ?, duracao_ms = ?, res_corpo = ?, atualizado_em = ? WHERE id = ?',
       r.tentativas, r.status, r.resultado, r.erro ?? null, r.duracao ?? null, r.resposta?.slice(0, 4000) ?? null, agora(), id);
     const eventos = 'SELECT evento_id FROM cbs_tiquete_eventos WHERE tiquete_id = ?';
-    if (r.resultado === 'ok') {
+    if (r.resultado === 'ok' && t.expirado_em) {
+      // T02: o link do aviso já nasceu vencido, e o evento só chega por um pedido novo.
+      executar(`UPDATE eventos SET situacao = 'nao_recebido', motivo = ?, atualizado_em = ? WHERE id IN (${eventos}) AND situacao IN ('disponivel', 'avisado', 'nao_recebido')`,
+        `O link do tíquete ${t.tiquete.slice(0, 8)}… venceu antes do download (T02). Abra uma nova solicitação.`, agora(), t.id);
+    } else if (r.resultado === 'ok') {
       executar(`UPDATE eventos SET situacao = 'avisado', motivo = NULL, atualizado_em = ? WHERE id IN (${eventos}) AND situacao IN ('disponivel', 'nao_recebido')`, agora(), t.id);
     } else {
       executar(`UPDATE eventos SET situacao = 'nao_recebido', motivo = ?, atualizado_em = ? WHERE id IN (${eventos}) AND situacao = 'disponivel'`,
@@ -235,21 +241,29 @@ export async function avisarTiquete(pocId: string, tiqueteId: string, opcoes: { 
   const dom = conferirDominio(url);
   if (!dom.ok) return fim({ resultado: 'erro', status: null, tentativas: 0, erro: dom.motivo });
   const req = { metodo: 'POST', url, cabecalhos: { 'Content-Type': 'application/json' }, corpo };
+  // T09 ligado: o primeiro 2xx deste aviso é descartado, e o mesmo aviso sai de novo.
+  const t09 = !opcoes.reenvioDe && armado(poc.id, 'T09', 'cbs');
+  if (t09) registrarInjecao(poc.id, 'T09', 'cbs', poc.dia, { tipo: 'aviso', id }, { endpoint: t.endpoint, tiquete: t.tiquete });
   const esperas = [0, ...config.avisoEsperasMs];
+  if (t09 && esperas.length < 2) esperas.push(1000);
   let ultimo: Awaited<ReturnType<typeof enviarHttp>> | undefined;
   let n = 0;
+  let descartou = false;
   for (const espera of esperas) {
     if (espera) await esperar(espera);
     n++;
     ultimo = await enviarHttp(req, 10000);
     const ok = !!ultimo.status && ultimo.status >= 200 && ultimo.status < 300;
+    const descartar = ok && t09 && !descartou;
+    if (descartar) descartou = true;
     gravarRequisicao({
       execucao_id: null, destino_id: null, registro_id: null, operacao_id: null, fase: 'aviso', entidade: 'cbs', metodo: 'POST', url, status: ultimo.status ?? null,
       duracao_ms: ultimo.duracaoMs, tentativa: n, chave_idempotencia: null, req_cabecalhos: JSON.stringify(req.cabecalhos),
-      req_corpo: gravado, res_cabecalhos: JSON.stringify(ultimo.cabecalhos), res_corpo: ultimo.corpoTexto.slice(0, 4000) || null, erro: ultimo.erro ?? null,
-      codigo_erro: null, resultado: ok ? 'ok' : 'erro', criado_em: agora(), usuario: usuarioAtual().usuario, rastreio: id, corpo_hash: sha256(corpo),
+      req_corpo: gravado, res_cabecalhos: JSON.stringify(ultimo.cabecalhos), res_corpo: ultimo.corpoTexto.slice(0, 4000) || null,
+      erro: descartar ? T09_DESCARTE : ultimo.erro ?? null, codigo_erro: null, resultado: ok && !descartar ? 'ok' : 'erro', criado_em: agora(), usuario: usuarioAtual().usuario,
+      rastreio: id, corpo_hash: sha256(corpo),
     });
-    if (ok) return fim({ resultado: 'ok', status: ultimo.status!, tentativas: n, duracao: ultimo.duracaoMs, resposta: ultimo.corpoTexto });
+    if (ok && !descartar) return fim({ resultado: 'ok', status: ultimo.status!, tentativas: n, duracao: ultimo.duracaoMs, resposta: ultimo.corpoTexto });
   }
   return fim({
     resultado: 'erro', status: ultimo?.status ?? null, tentativas: n, duracao: ultimo?.duracaoMs, resposta: ultimo?.corpoTexto,

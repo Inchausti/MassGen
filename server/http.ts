@@ -133,7 +133,10 @@ export async function despachar(rot: Roteador, req: IncomingMessage, res: Server
 
 async function executarRota(achado: { handler: Handler; params: Record<string, string> }, req: IncomingMessage, res: ServerResponse, url: URL, quem: ContextoUso | null): Promise<void> {
   try {
-    const corpo = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '') ? await lerCorpo(req) : undefined;
+    // GET com corpo só quando ele vem: a Nova Solicitação do IBS (MOC v1.10) é um GET com corpo.
+    const comCorpo = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '')
+      || (req.method === 'GET' && (Number(req.headers['content-length'] ?? 0) > 0 || !!req.headers['transfer-encoding']));
+    const corpo = comCorpo ? await lerCorpo(req) : undefined;
     const r = await achado.handler({ req, res, params: achado.params, query: url.searchParams, corpo, quem });
     if (res.writableEnded) return;
     if (r && typeof r === 'object' && (r as Resposta).__resposta) {

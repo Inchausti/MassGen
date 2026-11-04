@@ -30,13 +30,15 @@ import { linhaDoTempo, listarRequisicoes, obterRequisicao, painelExecucao } from
 import { pacoteDeEvidencias, trilhaDaExecucao } from './servicos/rastreabilidade.ts';
 import {
   atualizarPoc, barramento, criarPoc, detalharAviso, detalharNota, detalharPoc, detalharTiquete, importarNotas, listarEnvios, listarNotas, listarPocs,
-  novaCredencialCbs, novaCredencialIbs, obterArquivo, obterTiquete, removerPoc, xmlDaNota,
+  marcarSplithub, novaCredencialCbs, novaCredencialIbs, obterArquivo, obterTiquete, removerPoc, xmlDaNota,
 } from './servicos/pocs.ts';
 import { CAMPOS, CATALOGO_IBS, ROTEIROS } from './emulacao/catalogo.ts';
 import { CAMPOS_CBS, CATALOGO_CBS, DERIVADOS_CBS } from './emulacao/catalogo-cbs.ts';
 import { gravarEnvioManual, obterPoc, planejarEnvio } from './emulacao/execucao.ts';
 import { aplicarRoteiro, planejarRoteiro } from './emulacao/plano.ts';
 import { fecharDia } from './emulacao/relogio.ts';
+import { aplicarPlano, cobertura, previaPlano, previaTroca, trocarRoteiro } from './emulacao/cobertura.ts';
+import { CASOS, definirCaso } from './emulacao/casos.ts';
 import { zipDoArquivo } from './emulacao/arquivo-ibs.ts';
 import { avisarSolicitacao } from './entes/ibs.ts';
 import { avisarTiquete, cadastrarUrlRetorno } from './entes/cbs.ts';
@@ -446,7 +448,7 @@ rotas.post('/api/requisicoes/:id/reenviar', async ({ params, corpo }) => {
   return r;
 });
 
-// ---------------------------------------------------------------- POC da apuração assistida (v4.3, etapas 1 e 2: IBS e CBS)
+// ---------------------------------------------------------------- POC da apuração assistida (v4.3, etapas 1 a 3: IBS, CBS e cobertura)
 rotas.get('/api/catalogo/eventos', () => ({
   campos: CAMPOS,
   camposCbs: CAMPOS_CBS,
@@ -457,6 +459,7 @@ rotas.get('/api/catalogo/eventos', () => ({
     variantes: t.variantes ? Object.keys(t.variantes) : null, unico: t.unico ?? null, parcial: !!t.parcial, pagamento: t.pagamento ?? null, nota: t.nota ?? null,
   })),
   roteiros: ROTEIROS,
+  casos: CASOS,
 }));
 rotas.get('/api/pocs', () => listarPocs());
 rotas.post('/api/pocs', ({ corpo, quem }) => {
@@ -503,7 +506,17 @@ rotas.get('/api/pocs/:id/collection', ({ params, query }) => {
   return arquivo(JSON.stringify(c, null, 2), 'application/json; charset=utf-8', `massgen-${ente}-emulado-${p.nome.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.postman_collection.json`);
 });
 
-rotas.get('/api/pocs/:id/notas', ({ params, query }) => listarNotas(params.id, { busca: txt(query.get('busca')), papel: txt(query.get('papel')), situacao: txt(query.get('situacao')) }));
+rotas.get('/api/pocs/:id/notas', ({ params, query }) => listarNotas(params.id, {
+  busca: txt(query.get('busca')), papel: txt(query.get('papel')), situacao: txt(query.get('situacao')), splithub: txt(query.get('splithub')),
+}));
+// Nota ausente no SplitHub (T08): o envio só sai com "incluir não importadas".
+rotas.put('/api/pocs/:id/notas/splithub', ({ params, corpo }) => {
+  const r = marcarSplithub(params.id, corpo?.notaIds, corpo?.splithub);
+  auditar('poc.splithub', `${r.notas} nota(s) da POC ${obterPoc(params.id).nome} marcada(s) como ${r.splithub === 'ausente' ? 'ausentes no SplitHub (T08)' : 'não conferidas no SplitHub'}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: r,
+  });
+  return r;
+});
 rotas.post('/api/pocs/:id/notas', ({ params, corpo, quem }) => {
   const r = importarNotas(params.id, corpo?.arquivos, quem!.usuario);
   auditar('poc.importar', `${r.aceitas} nota(s) aceita(s), ${r.fora} de fora, ${r.cancelamentos} cancelamento(s) e ${r.repetidas} repetida(s) na POC ${obterPoc(params.id).nome}`, {
@@ -523,11 +536,12 @@ const forcarPermitido = (forcar: unknown, papel?: string) => {
   if (forcar && papel !== 'root') throw new ErroHttp(403, 'Só root pode forçar a ordem e o saldo.');
   return !!forcar;
 };
-rotas.post('/api/pocs/:id/envios/previa', ({ params, corpo, quem }) => planejarEnvio(obterPoc(params.id), corpo?.notaIds, corpo?.tipos, forcarPermitido(corpo?.forcar, quem!.papel)));
+rotas.post('/api/pocs/:id/envios/previa', ({ params, corpo, quem }) =>
+  planejarEnvio(obterPoc(params.id), corpo?.notaIds, corpo?.tipos, forcarPermitido(corpo?.forcar, quem!.papel), !!corpo?.incluirAusentes));
 rotas.post('/api/pocs/:id/envios', async ({ params, corpo, quem }) => {
   const poc = obterPoc(params.id);
   const forcar = forcarPermitido(corpo?.forcar, quem!.papel);
-  const plano = planejarEnvio(poc, corpo?.notaIds, corpo?.tipos, forcar);
+  const plano = planejarEnvio(poc, corpo?.notaIds, corpo?.tipos, forcar, !!corpo?.incluirAusentes);
   const env = gravarEnvioManual(poc, plano, plano.itens.map((i) => i.id).filter((x, i, a) => a.indexOf(x) === i), (corpo?.notaIds ?? []).map(String), quem!.usuario);
   auditar('poc.envio', `Envio manual nº ${env.numero} na POC ${poc.nome}: ${env.ibs} evento(s) do IBS e ${env.cbs} da CBS no dia ${poc.dia}${forcar ? ', forçado' : ''}`, {
     alvoTipo: 'poc', alvoId: poc.id, detalhes: { numero: env.numero, eventos: env.eventos.length, ibs: env.ibs, cbs: env.cbs, bloqueios: plano.bloqueios.length, substituidos: env.substituidos, forcar, dia: poc.dia },
@@ -536,26 +550,59 @@ rotas.post('/api/pocs/:id/envios', async ({ params, corpo, quem }) => {
   return criado({ envio: { id: env.id, numero: env.numero, substituidos: env.substituidos }, itens: plano.itens, bloqueios: plano.bloqueios, fechamento });
 });
 rotas.get('/api/pocs/:id/envios', ({ params }) => listarEnvios(params.id));
+const opcoesRoteiro = (corpo: any) => ({ defasagem: corpo?.defasagem, incluirAusentes: !!corpo?.incluirAusentes });
 rotas.post('/api/pocs/:id/roteiros/previa', ({ params, corpo }) => {
-  const r = planejarRoteiro(obterPoc(params.id), corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias ?? 1);
-  return { roteiro: r.roteiro.id, intervalo: r.intervalo, itens: r.itens, bloqueios: r.bloqueios };
+  const r = planejarRoteiro(obterPoc(params.id), corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias ?? 1, opcoesRoteiro(corpo));
+  return { roteiro: r.roteiro.id, intervalo: r.intervalo, defasagem: r.defasagem, itens: r.itens, bloqueios: r.bloqueios };
 });
 rotas.post('/api/pocs/:id/roteiros', ({ params, corpo, quem }) => {
   const poc = obterPoc(params.id);
-  const r = aplicarRoteiro(poc, corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias, quem!.usuario);
+  const r = aplicarRoteiro(poc, corpo?.notaIds, String(corpo?.roteiro ?? ''), corpo?.intervaloDias, quem!.usuario, opcoesRoteiro(corpo));
   auditar('poc.roteiro', `${String(corpo?.roteiro)} aplicado a ${new Set(r.itens.map((i) => i.opId)).size} nota(s) da POC ${poc.nome}: ${r.itens.length} evento(s) planejado(s) até ${r.ultimoDia}`, {
     alvoTipo: 'poc', alvoId: poc.id, detalhes: { envio: r.envio.numero, roteiro: corpo?.roteiro, eventos: r.itens.length, bloqueios: r.bloqueios.length },
   });
   return criado(r);
 });
 
+// Plano e painel de cobertura (seção 08; D-MG-04 a D-MG-06). A prévia roda o mesmo plano e desfaz.
+rotas.get('/api/pocs/:id/cobertura', ({ params }) => cobertura(params.id));
+const opcoesPlano = (corpo: any) => ({ refazer: !!corpo?.refazer, intervaloDias: corpo?.intervaloDias, defasagem: corpo?.defasagem });
+rotas.post('/api/pocs/:id/plano/previa', ({ params, corpo, quem }) => previaPlano(params.id, opcoesPlano(corpo), quem!.usuario));
+rotas.post('/api/pocs/:id/plano', ({ params, corpo, quem }) => {
+  const r = aplicarPlano(params.id, opcoesPlano(corpo), quem!.usuario);
+  auditar('poc.plano', `Plano de cobertura ${corpo?.refazer ? 'refeito' : 'montado'} na POC ${obterPoc(params.id).nome}: ${r.notas} nota(s), ${r.eventos} evento(s), ${r.cobertura.recebidos} de ${r.cobertura.meta} tipos já recebidos`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { envios: r.envios.map((e) => ({ numero: e.numero, roteiro: e.roteiro, notas: e.notas.length })), liberadas: r.liberadas, semPlano: r.semPlano.length, defasagem: r.defasagem },
+  });
+  return criado(r);
+});
+// Troca de roteiro de uma nota (D-MG-04): o planejado sai e o roteiro novo entra, continuando da história da nota.
+const opcoesTroca = (corpo: any) => ({ roteiro: corpo?.roteiro, intervaloDias: corpo?.intervaloDias, defasagem: corpo?.defasagem, incluirAusentes: !!corpo?.incluirAusentes });
+rotas.post('/api/pocs/:id/notas/:nota/roteiro/previa', ({ params, corpo, quem }) => previaTroca(params.id, params.nota, opcoesTroca(corpo), quem!.usuario));
+rotas.post('/api/pocs/:id/notas/:nota/roteiro', ({ params, corpo, quem }) => {
+  const r = trocarRoteiro(params.id, params.nota, opcoesTroca(corpo), quem!.usuario);
+  auditar('poc.roteiro_trocar', `Roteiro da nota trocado${r.de ? ` de ${r.de}` : ''} para ${r.roteiro} na POC ${obterPoc(params.id).nome}: ${r.substituidos} evento(s) planejado(s) substituído(s), ${r.itens.length} novo(s)${r.continuacao ? ', continuando da história da nota' : ''}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { nota: params.nota, de: r.de, para: r.roteiro, envio: r.envio.numero, substituidos: r.substituidos, eventos: r.itens.length, pulados: r.pulados.length },
+  });
+  return criado(r);
+});
+// Casos de transporte e falha (seção 07; D-MG-06): ligar põe na meta e arma a provocação; "rearmar" provoca de novo.
+rotas.put('/api/pocs/:id/casos/:caso', ({ params, corpo, quem }) => {
+  const c = definirCaso(params.id, params.caso, { ligado: corpo?.ligado, rearmar: corpo?.rearmar }, quem!.usuario);
+  auditar('poc.caso', `${c.id} ${corpo?.rearmar ? 'armado de novo' : c.ligado ? 'ligado' : 'desligado'} na POC ${obterPoc(params.id).nome}`, {
+    alvoTipo: 'poc', alvoId: params.id, detalhes: { caso: c.id, ligado: c.ligado, armado: c.armado },
+  });
+  return c;
+});
+
 rotas.post('/api/pocs/:id/relogio/fechar', async ({ params, corpo }) => {
   const antes = obterPoc(params.id).dia;
   const r = await fecharDia(params.id, txt(corpo?.ate ?? null));
   const tiquetes = r.cbs.flatMap((c) => c.tiquetes);
-  auditar('poc.relogio', `Relógio da POC ${obterPoc(params.id).nome} foi de ${antes} a ${r.dia}: ${r.processados.length} Delta(s) do IBS e ${tiquetes.length} aviso(s) sem pedido da CBS`, {
+  const deltas = r.processados.filter((p) => p.tipo === 'DIFERENCIAL' && !p.semDelta).length;
+  const manuais = r.processados.filter((p) => p.tipo === 'MANUAL').length;
+  auditar('poc.relogio', `Relógio da POC ${obterPoc(params.id).nome} foi de ${antes} a ${r.dia}: ${deltas} Delta(s) e ${manuais} Arquivo(s) Manual(is) do IBS e ${tiquetes.length} aviso(s) sem pedido da CBS`, {
     alvoTipo: 'poc', alvoId: params.id, detalhes: {
-      de: antes, para: r.dia, deltas: r.processados.map((p) => ({ dia: p.dia, idSolic: p.idSolic, arquivos: p.arquivos.length, aviso: p.aviso?.resultado })),
+      de: antes, para: r.dia, deltas: r.processados.map((p) => ({ dia: p.dia, tipo: p.tipo, idSolic: p.idSolic, arquivos: p.arquivos.length, aviso: p.aviso?.resultado, semDelta: p.semDelta, provocado: p.provocado?.caso })),
       cbs: r.cbs.map((c) => ({ dia: c.dia, eventos: c.eventos, tiquetes: c.tiquetes.map((t, i) => ({ endpoint: t.endpoint, documentos: t.documentos, aviso: c.avisos[i]?.resultado })) })),
     },
   });

@@ -12,13 +12,13 @@ export interface NotaRow {
   id: string; poc_id: string; chave: string; modelo: string | null; serie: string | null; numero: string | null; emissao: string | null; autorizacao: string | null;
   emit_cnpj: string | null; emit_nome: string | null; dest_doc: string | null; dest_nome: string | null; papel: string | null; finalidade: string | null;
   ref_chaves: string; origem_id: string | null; cancelada_em: string | null; v_ibs: number; v_ibs_uf: number; v_ibs_mun: number; v_cbs: number;
-  situacao: string; motivo: string | null; operacao_id: number | null; roteiro: string | null;
+  situacao: string; motivo: string | null; operacao_id: number | null; roteiro: string | null; splithub?: 'nao_conferido' | 'ausente';
 }
 
 export interface PocRow {
   id: string; nome: string; cnpj: string; cnpj_raiz: string; competencia: string; dia: string; ambiente_id: string | null; limites_relaxados: number;
   lancamentos_por_arquivo: number; ibs_client_id: string | null; ibs_secret_hash: string | null; ibs_habilitado_em: string | null; ibs_webhook_url: string | null;
-  cbs_client_id: string | null; cbs_secret_hash: string | null; cbs_url_retorno: string | null; cbs_url_validada_em: string | null;
+  cbs_client_id: string | null; cbs_secret_hash: string | null; cbs_url_retorno: string | null; cbs_url_validada_em: string | null; defasagem_cbs: number;
   criado_por: string | null; criado_em: string; atualizado_em: string;
 }
 
@@ -41,6 +41,10 @@ export function obterPoc(id: string): PocRow {
 }
 
 export const notaPorId = (id: string) => um<NotaRow>('SELECT * FROM notas WHERE id = ?', id);
+
+// Nota marcada como ausente no SplitHub: o MassGen avisa antes de mandar; mandar assim mesmo é o caso T08 (seção 04).
+export const AUSENTE = 'a nota não está no SplitHub; marque "incluir não importadas" para mandar assim mesmo (T08)';
+export const ausente = (...notas: (NotaRow | undefined)[]) => notas.some((n) => n?.splithub === 'ausente');
 export const relacionadasDe = (op: NotaRow) => todos<NotaRow>("SELECT * FROM notas WHERE origem_id = ? AND situacao = 'aceita' ORDER BY emissao, numero", op.id);
 
 // ---------------------------------------------------------------- os dois entes
@@ -300,7 +304,7 @@ function lerPedidos(tipos: unknown): Pedido[] {
   return pedidos.sort((a, b) => (a.ente === b.ente ? ENTES[a.ente].ordem(a.tipo) - ENTES[b.ente].ordem(b.tipo) : a.ente === 'ibs' ? -1 : 1));
 }
 
-export function planejarEnvio(poc: PocRow, notaIds: unknown, tipos: unknown, forcar = false) {
+export function planejarEnvio(poc: PocRow, notaIds: unknown, tipos: unknown, forcar = false, incluirAusentes = false) {
   if (!Array.isArray(notaIds) || !notaIds.length) throw new ErroHttp(400, 'Marque pelo menos uma nota.');
   if (notaIds.length > 500) throw new ErroHttp(400, 'No máximo 500 notas por envio.');
   const pedidos = lerPedidos(tipos);
@@ -323,6 +327,7 @@ export function planejarEnvio(poc: PocRow, notaIds: unknown, tipos: unknown, for
   for (const id of new Set(notaIds.map(String))) {
     const nota = notaPorId(id);
     if (!nota || nota.poc_id !== poc.id) { ctx.bloqueios.push({ notaId: id, nota: id, motivo: 'nota não encontrada nesta POC' }); continue; }
+    if (!incluirAusentes && ausente(nota, nota.origem_id ? notaPorId(nota.origem_id) : undefined)) { ctx.bloqueios.push({ notaId: id, nota: rotuloNota(nota), motivo: AUSENTE }); continue; }
     const ibs = pedidos.filter((p) => p.ente === 'ibs');
     if (ibs.length) {
       const { op, preferida, motivo } = operacaoDe(nota);
@@ -340,7 +345,7 @@ export function planejarEnvio(poc: PocRow, notaIds: unknown, tipos: unknown, for
     }
     for (const g of grupos.values()) rodar(id, estado('cbs', g.op), g.lista, g.preferida);
   }
-  return { dia: poc.dia, forcar, itens: ctx.itens, bloqueios: ctx.bloqueios };
+  return { dia: poc.dia, forcar, incluirAusentes, itens: ctx.itens, bloqueios: ctx.bloqueios };
 }
 
 // ---------------------------------------------------------------- gravação

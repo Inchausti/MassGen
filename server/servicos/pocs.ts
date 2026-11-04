@@ -12,6 +12,7 @@ import { linhaMoc, cabecalhoOperacao } from '../emulacao/arquivo-ibs.ts';
 import { fotoCredito, fotoDebito, registroPagamento, type DadosCbs, type EventoCbs } from '../emulacao/arquivo-cbs.ts';
 import { expirou, type TiqueteRow } from '../emulacao/cbs.ts';
 import { carregarEstado, obterPoc, rotuloNota, saldoDe, type NotaRow, type PocRow } from '../emulacao/execucao.ts';
+import { DEFASAGEM_MAX } from '../emulacao/plano.ts';
 import { lerDocumento, raizCnpj, type CancelamentoLido, type NotaLida } from '../emulacao/xml.ts';
 import { ehZip, lerZip } from '../emulacao/zip.ts';
 import { PREFIXO_IBS, tentativasDoAviso, type ArquivoRow } from '../entes/ibs.ts';
@@ -31,9 +32,11 @@ function resumo(p: PocRow) {
     "SELECT SUM(situacao = 'aceita') AS aceitas, SUM(situacao = 'fora') AS fora, SUM(papel = 'adquirente' AND situacao = 'aceita') AS entrada, SUM(papel = 'fornecedor' AND situacao = 'aceita') AS saida FROM notas WHERE poc_id = ?", p.id)!;
   const ev = todos<{ ente: string; situacao: string; n: number }>('SELECT ente, situacao, COUNT(*) AS n FROM eventos WHERE poc_id = ? GROUP BY ente, situacao', p.id);
   const somar = (lista: typeof ev) => lista.reduce<Record<string, number>>((s, e) => ({ ...s, [e.situacao]: (s[e.situacao] ?? 0) + e.n }), {});
+  const proximos = Object.fromEntries(todos<{ ente: string; dia: string }>("SELECT ente, MIN(dia) AS dia FROM eventos WHERE poc_id = ? AND situacao = 'planejado' GROUP BY ente", p.id).map((x) => [x.ente, x.dia]));
   return {
     id: p.id, nome: p.nome, cnpj: p.cnpj, cnpjRaiz: p.cnpj_raiz, competencia: p.competencia, dia: p.dia, ambienteId: p.ambiente_id,
-    limitesRelaxados: !!p.limites_relaxados, lancamentosPorArquivo: p.lancamentos_por_arquivo, criadoPor: p.criado_por, criadoEm: p.criado_em,
+    limitesRelaxados: !!p.limites_relaxados, lancamentosPorArquivo: p.lancamentos_por_arquivo, defasagemCbs: p.defasagem_cbs ?? 0, criadoPor: p.criado_por, criadoEm: p.criado_em,
+    proximos: { ibs: proximos.ibs ?? null, cbs: proximos.cbs ?? null },
     notas: { aceitas: n.aceitas ?? 0, fora: n.fora ?? 0, entrada: n.entrada ?? 0, saida: n.saida ?? 0 },
     eventos: somar(ev),
     eventosPorEnte: { ibs: somar(ev.filter((e) => e.ente === 'ibs')), cbs: somar(ev.filter((e) => e.ente === 'cbs')) },
@@ -78,7 +81,9 @@ export function atualizarPoc(id: string, dados: Record<string, unknown>) {
   const relaxados = dados.limitesRelaxados === undefined ? p.limites_relaxados : dados.limitesRelaxados ? 1 : 0;
   const porArquivo = dados.lancamentosPorArquivo === undefined ? p.lancamentos_por_arquivo : Math.round(Number(dados.lancamentosPorArquivo));
   if (!Number.isFinite(porArquivo) || porArquivo < 1 || porArquivo > 100000) throw new ErroHttp(400, 'Lançamentos por arquivo: de 1 a 100.000.');
-  executar('UPDATE pocs SET nome = ?, limites_relaxados = ?, lancamentos_por_arquivo = ?, atualizado_em = ? WHERE id = ?', nome, relaxados, porArquivo, agora(), id);
+  const defasagem = dados.defasagemCbs === undefined ? p.defasagem_cbs : Math.round(Number(dados.defasagemCbs));
+  if (!Number.isFinite(defasagem) || Math.abs(defasagem) > DEFASAGEM_MAX) throw new ErroHttp(400, `Defasagem da CBS: de -${DEFASAGEM_MAX} a ${DEFASAGEM_MAX} dias.`);
+  executar('UPDATE pocs SET nome = ?, limites_relaxados = ?, lancamentos_por_arquivo = ?, defasagem_cbs = ?, atualizado_em = ? WHERE id = ?', nome, relaxados, porArquivo, defasagem, agora(), id);
   return detalharPoc(id);
 }
 
@@ -220,17 +225,19 @@ function notaResumo(n: NotaRow, c?: Contagem) {
     emitente: { doc: n.emit_cnpj, nome: n.emit_nome }, destinatario: { doc: n.dest_doc, nome: n.dest_nome }, papel: n.papel, finalidade: n.finalidade,
     origemId: n.origem_id, canceladaEm: n.cancelada_em, vIbs: n.v_ibs, vIbsUf: n.v_ibs_uf, vIbsMun: n.v_ibs_mun, vCbs: n.v_cbs,
     situacao: n.situacao, motivo: n.motivo, operacaoId: n.operacao_id, roteiro: n.roteiro, nomeArquivo: (n as NotaRow & { nome_arquivo?: string }).nome_arquivo,
+    splithub: n.splithub ?? 'nao_conferido',
     eventos: c ? { total: c.total, planejados: c.planejados, recebidos: c.recebidos, pendentes: c.pendentes } : { total: 0, planejados: 0, recebidos: 0, pendentes: 0 },
   };
 }
 
-const COLUNAS_NOTA = 'id, poc_id, chave, modelo, serie, numero, emissao, autorizacao, emit_cnpj, emit_nome, dest_doc, dest_nome, papel, finalidade, ref_chaves, origem_id, cancelada_em, v_ibs, v_ibs_uf, v_ibs_mun, v_cbs, situacao, motivo, operacao_id, roteiro, nome_arquivo';
+const COLUNAS_NOTA = 'id, poc_id, chave, modelo, serie, numero, emissao, autorizacao, emit_cnpj, emit_nome, dest_doc, dest_nome, papel, finalidade, ref_chaves, origem_id, cancelada_em, v_ibs, v_ibs_uf, v_ibs_mun, v_cbs, situacao, motivo, operacao_id, roteiro, nome_arquivo, splithub';
 
-export function listarNotas(pocId: string, f: { busca?: string; papel?: string; situacao?: string } = {}) {
+export function listarNotas(pocId: string, f: { busca?: string; papel?: string; situacao?: string; splithub?: string } = {}) {
   obterPoc(pocId);
   const where = ['poc_id = ?'];
   const p: string[] = [pocId];
   if (f.papel) { where.push('papel = ?'); p.push(f.papel); }
+  if (f.splithub) { where.push('splithub = ?'); p.push(f.splithub); }
   if (f.situacao) { where.push('situacao = ?'); p.push(f.situacao); }
   if (f.busca) { where.push('(chave LIKE ? OR numero LIKE ? OR emit_cnpj LIKE ? OR dest_doc LIKE ? OR emit_nome LIKE ? OR dest_nome LIKE ?)'); p.push(...Array(6).fill(`%${f.busca}%`)); }
   const contagens = new Map(todos<Contagem>(
@@ -340,6 +347,9 @@ export function detalharNota(pocId: string, notaId: string) {
       relacionada: e.nota_rel_id, lancamentoId: e.lancamento_id, hash: e.hash,
       linha: e.lancamento_id ? linhaMoc(e.lancamento_id, e.dth_lancto!, e.tipo, valores) : null,
       arquivo: e.arquivo_id ? arquivo(e.arquivo_id) : null,
+      // O Delta e o Arquivo Manual que levaram o mesmo lançamento (T04, T06, T07).
+      arquivos: todos<{ arquivo_id: string }>('SELECT ae.arquivo_id FROM ibs_arquivo_eventos ae JOIN arquivos a ON a.id = ae.arquivo_id WHERE ae.evento_id = ? ORDER BY a.numero', e.id)
+        .map((a) => arquivo(a.arquivo_id)),
     };
   });
   const estado = carregarEstado(op);
@@ -356,6 +366,17 @@ export function detalharNota(pocId: string, notaId: string) {
   };
 }
 
+// Nota ausente no SplitHub (T08): marcada pelo operador até a conferência pela API do SplitHub (etapa 4) dizer sozinha.
+export function marcarSplithub(pocId: string, notaIds: unknown, valor: unknown) {
+  obterPoc(pocId);
+  if (!Array.isArray(notaIds) || !notaIds.length) throw new ErroHttp(400, 'Marque pelo menos uma nota.');
+  const v = valor === 'ausente' ? 'ausente' : valor === 'nao_conferido' ? 'nao_conferido' : undefined;
+  if (!v) throw new ErroHttp(400, 'splithub deve ser "ausente" ou "nao_conferido".');
+  const ids = [...new Set(notaIds.map(String))];
+  const r = executar(`UPDATE notas SET splithub = ? WHERE poc_id = ? AND id IN (${ids.map(() => '?').join(', ')})`, v, pocId, ...ids);
+  return { splithub: v, notas: Number(r.changes) };
+}
+
 export function xmlDaNota(pocId: string, notaId: string) {
   const n = um<{ xml: string; chave: string }>('SELECT xml, chave FROM notas WHERE id = ? AND poc_id = ?', notaId, pocId);
   if (!n) throw new ErroHttp(404, 'Nota não encontrada.');
@@ -367,17 +388,23 @@ export function xmlDaNota(pocId: string, notaId: string) {
 export function barramento(pocId: string) {
   const poc = obterPoc(pocId);
   const sols = todos<Record<string, unknown>>("SELECT * FROM solicitacoes WHERE poc_id = ? AND ente = 'ibs' ORDER BY numero DESC LIMIT 200", pocId);
+  const provocacoes = todos<{ caso: string; ente: string; dia: string; ref_tipo: string | null; ref_id: string | null; detalhe: string; em: string }>(
+    'SELECT caso, ente, dia, ref_tipo, ref_id, detalhe, em FROM injecoes WHERE poc_id = ? ORDER BY id DESC LIMIT 100', pocId);
   return {
     ibs: resumo(poc).ibs,
+    // O que os casos de transporte e falha ligados provocaram (seção 07), do mais recente.
+    provocacoes: provocacoes.map((i) => ({ caso: i.caso, ente: i.ente, dia: i.dia, refTipo: i.ref_tipo, refId: i.ref_id, detalhe: json(i.detalhe, {}), em: i.em })),
     solicitacoes: sols.map((s) => ({
       id: s.id, idSolic: s.numero, tipo: s.tipo, situacao: s.situacao, dia: s.dia, dataSolic: s.data_solic, validade: s.validade, operacoes: s.qtd_oper,
+      periodo: [String(s.trans_ini).slice(0, 10), String(s.trans_fim).slice(0, 10)],
+      provocacao: provocacoes.find((i) => i.ref_id === s.id || (i.caso === 'T07' && json<{ idSolic?: number }>(i.detalhe, {}).idSolic === s.numero))?.caso ?? null,
       arquivos: todos<Record<string, unknown>>('SELECT a.id, a.numero, a.nome, a.tamanho, a.hash, a.qtd_lancamentos, (SELECT COUNT(*) FROM downloads d WHERE d.arquivo_id = a.id) AS downloads FROM arquivos a WHERE a.solicitacao_id = ? ORDER BY a.numero', s.id as string)
         .map((a) => ({ id: a.id, idArq: a.numero, nome: a.nome, tamanho: a.tamanho, hash: a.hash, lancamentos: a.qtd_lancamentos, downloads: a.downloads })),
       avisos: todos<Record<string, unknown>>('SELECT id, reenvio_de, status, resultado, tentativas, erro, duracao_ms, criado_por, criado_em FROM avisos WHERE solicitacao_id = ? ORDER BY criado_em', s.id as string)
         .map((a) => ({ id: a.id, reenvioDe: a.reenvio_de, status: a.status, resultado: a.resultado, tentativas: a.tentativas, erro: a.erro, duracaoMs: a.duracao_ms, por: a.criado_por, em: a.criado_em })),
     })),
     cbs: resumo(poc).cbs,
-    tiquetes: tiquetesDaPoc(pocId).map((t) => resumoTiquete(t, poc.dia)),
+    tiquetes: tiquetesDaPoc(pocId).map((t) => ({ ...resumoTiquete(t, poc.dia), provocacao: provocacoes.find((i) => i.ref_tipo === 'tiquete' && i.ref_id === t.id)?.caso ?? null })),
     chamadas: todos<Record<string, unknown>>('SELECT id, ente, metodo, rota, status, ip, duracao_ms, em FROM chamadas WHERE poc_id = ? ORDER BY id DESC LIMIT 100', pocId)
       .map((c) => ({ id: c.id, ente: c.ente, metodo: c.metodo, rota: c.rota, status: c.status, ip: c.ip, duracaoMs: c.duracao_ms, em: c.em })),
   };

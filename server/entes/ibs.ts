@@ -10,7 +10,9 @@ import { auditar, gravarRequisicao, sha256, usuarioAtual } from '../auditoria.ts
 import { lerSegredoPoc, removerSegredoPoc, salvarSegredoPoc } from '../cofre.ts';
 import { enviarHttp, mascararCabecalhos } from '../engine/cliente.ts';
 import { zipDoArquivo } from '../emulacao/arquivo-ibs.ts';
-import { obterPoc, type PocRow } from '../emulacao/execucao.ts';
+import { armado, registrarInjecao } from '../emulacao/casos.ts';
+import { agoraSimulado } from '../emulacao/cbs.ts';
+import { obterPoc, somarDias, type PocRow } from '../emulacao/execucao.ts';
 
 export const entes = new Roteador();
 export const PREFIXO_IBS = '/entes/ibs';
@@ -113,15 +115,19 @@ rota('GET', '/v1/aassist/arquivo/:arquivo', ({ params, req }, poc) => {
 
 export interface ArquivoRow { id: string; poc_id: string; solicitacao_id: string; numero: number; parte: number; nome: string; conteudo: string; hash: string; tamanho: number; qtd_operacoes: number; qtd_lancamentos: number; gerado_em: string }
 
+// Os eventos que um arquivo levou: o Delta e o Manual podem levar o mesmo lançamento (caso T04).
+const EVENTOS_DO_ARQUIVO = 'SELECT evento_id FROM ibs_arquivo_eventos WHERE arquivo_id = ?';
+const EVENTOS_DA_SOLICITACAO = 'SELECT ae.evento_id FROM ibs_arquivo_eventos ae JOIN arquivos a ON a.id = ae.arquivo_id WHERE a.solicitacao_id = ?';
+
 // Baixar é a prova de recebimento (D-MG-09): os eventos do arquivo passam a "recebido".
 export function registrarDownload(pocId: string, arquivoId: string, req: IncomingMessage): void {
   executar('INSERT INTO downloads (poc_id, arquivo_id, ip, agente, em) VALUES (?, ?, ?, ?, ?)', pocId, arquivoId, ipDe(req), String(req.headers['user-agent'] ?? '').slice(0, 200), agora());
-  executar("UPDATE eventos SET situacao = 'recebido', atualizado_em = ? WHERE arquivo_id = ? AND situacao IN ('disponivel', 'avisado', 'nao_recebido')", agora(), arquivoId);
+  executar(`UPDATE eventos SET situacao = 'recebido', motivo = NULL, atualizado_em = ? WHERE id IN (${EVENTOS_DO_ARQUIVO}) AND situacao IN ('disponivel', 'avisado', 'nao_recebido')`, agora(), arquivoId);
 }
 
 // ---------------------------------------------------------------- 5.4 Listagem de Solicitações de Arquivos
 
-interface SolicitacaoRow { id: string; poc_id: string; numero: number; tipo: string; situacao: string; dia: string; data_solic: string; trans_ini: string; trans_fim: string; validade: string; qtd_oper: number }
+export interface SolicitacaoRow { id: string; poc_id: string; numero: number; tipo: string; situacao: string; dia: string; data_solic: string; trans_ini: string; trans_fim: string; validade: string; qtd_oper: number }
 
 const SITUACOES = ['solicitada', 'gerada', 'enviada', 'cancelada', 'expirada', 'todas'];
 
@@ -141,6 +147,64 @@ rota('GET', '/v1/aassist/solicitacao/listar/:filtro', ({ params }, poc) => {
   return responder(200, { itens }, token ? { tokenContrib: token } : {});
 });
 
+// ---------------------------------------------------------------- 5.5 Nova Solicitação (Arquivo Manual)
+
+// Regras de consumo da documentação: 2 solicitações manuais por dia e 2 por competência no mesmo dia, período dentro
+// de uma única competência, sem sobreposição, e entrega só no próximo Processamento Diário. O MOC não dá os códigos
+// HTTP das recusas; os daqui são provisórios, declarados na collection. Os limites seguem "limites relaxados" da POC.
+export const MANUAIS_POR_DIA = 2;
+const DATA = /^\d{4}-\d{2}-\d{2}$/;
+const ATIVAS = "('SOLICITADA', 'GERADA', 'ENVIADA')";
+
+rota('GET', '/v1/aassist/solicitacao/incluir', ({ corpo, query }, poc) => {
+  const c = minusculas(corpo);
+  // O MOC manda os campos no corpo de um GET. Quem não consegue mandar corpo num GET usa a query, com os mesmos nomes.
+  const campo = (nome: string) => String(c[nome.toLowerCase()] ?? query.get(nome) ?? query.get(nome.toLowerCase()) ?? '').trim();
+  const cnpj = campo('cnpj').replace(/[.\-/\s]/g, '').toUpperCase();
+  const ini = campo('dataTransacaoIni').slice(0, 10);
+  const fim = campo('dataTransacaoFim').slice(0, 10);
+  const recusa = (status: number, mensagem: string) => responder(status, { resultado: 'ERRO', mensagem });
+  if (cnpj !== poc.cnpj && cnpj !== poc.cnpj_raiz) return recusa(400, `cnpj ${cnpj || 'ausente'} não é o contribuinte desta credencial (${poc.cnpj}).`);
+  if (!DATA.test(ini) || !DATA.test(fim)) return recusa(400, 'Informe dataTransacaoIni e dataTransacaoFim no formato AAAA-MM-DD.');
+  if (ini > fim) return recusa(400, 'dataTransacaoIni vem depois de dataTransacaoFim.');
+  if (ini.slice(0, 7) !== fim.slice(0, 7)) return recusa(400, 'O período precisa caber numa única competência. Quebre o pedido por mês.');
+  if (fim > poc.dia) return recusa(400, `O período passa do dia simulado (${poc.dia}): o IBS emulado ainda não processou esses dias.`);
+  const sobreposta = um<{ numero: number; trans_ini: string; trans_fim: string }>(
+    `SELECT numero, trans_ini, trans_fim FROM solicitacoes WHERE poc_id = ? AND ente = 'ibs' AND tipo = 'MANUAL' AND situacao IN ${ATIVAS}
+      AND substr(trans_ini, 1, 10) <= ? AND substr(trans_fim, 1, 10) >= ? ORDER BY numero LIMIT 1`, poc.id, fim, ini);
+  if (sobreposta) return recusa(409, `O período se sobrepõe à solicitação manual ${sobreposta.numero} (${sobreposta.trans_ini.slice(0, 10)} a ${sobreposta.trans_fim.slice(0, 10)}).`);
+  if (!poc.limites_relaxados) {
+    const doDia = (extra = '', ...p: string[]) => um<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM solicitacoes WHERE poc_id = ? AND ente = 'ibs' AND tipo = 'MANUAL' AND situacao <> 'CANCELADA' AND dia = ? ${extra}`, poc.id, poc.dia, ...p)!.n;
+    if (doDia() >= MANUAIS_POR_DIA) return recusa(429, `Limite de ${MANUAIS_POR_DIA} solicitações manuais por dia atingido no dia simulado ${poc.dia}.`);
+    if (doDia('AND substr(trans_ini, 1, 7) = ?', ini.slice(0, 7)) >= MANUAIS_POR_DIA) {
+      return recusa(429, `Limite de ${MANUAIS_POR_DIA} solicitações manuais da competência ${ini.slice(0, 7)} atingido no dia simulado ${poc.dia}.`);
+    }
+  }
+  const numero = um<{ n: number }>("SELECT COALESCE(MAX(numero), 9000) + 1 AS n FROM solicitacoes WHERE poc_id = ? AND ente = 'ibs'", poc.id)!.n;
+  const quando = agoraSimulado(poc.dia);
+  executar(
+    `INSERT INTO solicitacoes (id, poc_id, ente, numero, tipo, situacao, dia, data_solic, trans_ini, trans_fim, validade, qtd_oper, criado_em, atualizado_em)
+     VALUES (?, ?, 'ibs', ?, 'MANUAL', 'SOLICITADA', ?, ?, ?, ?, '', 0, ?, ?)`,
+    novoId('sol'), poc.id, numero, poc.dia, quando, `${ini}T00:00:00Z`, `${fim}T23:59:59.999Z`, agora(), agora(),
+  );
+  return responder(200, {
+    resultado: 'SUCESSO', tipoSolicitacao: 'MANUAL', sitSolicitacao: 'SOLICITADA', IdSolicitacao: numero, dataHoraSolic: quando,
+    dataTransacaoIni: ini, dataTransacaoFim: fim, previsaoGeracao: `${somarDias(poc.dia, 1)}T01:30:00Z`,
+  });
+});
+
+// ---------------------------------------------------------------- 5.6 Cancelamento de Solicitação
+
+rota('DELETE', '/v1/aassist/solicitacao/cancelamento/:idSolic', ({ params }, poc) => {
+  const s = um<SolicitacaoRow>("SELECT * FROM solicitacoes WHERE poc_id = ? AND ente = 'ibs' AND numero = ?", poc.id, Number(params.idSolic));
+  if (!s) return responder(404, { resultado: 'ERRO', mensagem: `Solicitação ${params.idSolic} não encontrada.` });
+  if (s.tipo !== 'MANUAL') return responder(409, { resultado: 'ERRO', mensagem: 'Só a solicitação manual pode ser cancelada; o Delta é do Processamento Diário.' });
+  if (s.situacao !== 'SOLICITADA') return responder(409, { resultado: 'ERRO', mensagem: `A solicitação ${s.numero} está ${s.situacao.toLowerCase()}; só a que ainda não foi processada pode ser cancelada.` });
+  executar("UPDATE solicitacoes SET situacao = 'CANCELADA', atualizado_em = ? WHERE id = ?", agora(), s.id);
+  return responder(200, { resultado: 'SUCESSO', IdSolicitacao: s.numero, sitSolicitacao: 'CANCELADA' });
+});
+
 // ---------------------------------------------------------------- 5.2 Notificação de Disponibilização (o MassGen chama o SplitHub)
 
 // No aviso, a situação é a do momento em que o arquivo ficou pronto (GERADA); na listagem, a atual.
@@ -154,6 +218,8 @@ export function corpoAviso(poc: PocRow, s: SolicitacaoRow, situacaoAtual = false
 }
 
 const esperar = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export const T09_DESCARTE = 'T09: o MassGen descartou esta resposta 2xx e repete o mesmo aviso.';
 
 export interface ResultadoAviso { id?: string; resultado: 'ok' | 'erro' | 'sem_webhook'; status?: number | null; tentativas?: number; mensagem?: string }
 
@@ -174,14 +240,12 @@ export async function avisarSolicitacao(pocId: string, solicitacaoId: string, op
   const fim = (r: { resultado: 'ok' | 'erro'; status: number | null; tentativas: number; erro?: string; duracao?: number; resposta?: string }): ResultadoAviso => {
     executar('UPDATE avisos SET tentativas = ?, status = ?, resultado = ?, erro = ?, duracao_ms = ?, res_corpo = ?, atualizado_em = ? WHERE id = ?',
       r.tentativas, r.status, r.resultado, r.erro ?? null, r.duracao ?? null, r.resposta?.slice(0, 4000) ?? null, agora(), id);
-    const arquivos = todos<{ id: string }>('SELECT id FROM arquivos WHERE solicitacao_id = ?', s.id).map((a) => a.id);
-    const marcas = arquivos.map(() => '?').join(', ');
     if (r.resultado === 'ok') {
       if (s.situacao === 'GERADA') executar("UPDATE solicitacoes SET situacao = 'ENVIADA', atualizado_em = ? WHERE id = ?", agora(), s.id);
-      if (arquivos.length) executar(`UPDATE eventos SET situacao = 'avisado', motivo = NULL, atualizado_em = ? WHERE arquivo_id IN (${marcas}) AND situacao IN ('disponivel', 'nao_recebido')`, agora(), ...arquivos);
-    } else if (arquivos.length) {
-      executar(`UPDATE eventos SET situacao = 'nao_recebido', motivo = ?, atualizado_em = ? WHERE arquivo_id IN (${marcas}) AND situacao = 'disponivel'`,
-        `Aviso sem 2xx depois de ${r.tentativas} tentativa(s)${r.erro ? `: ${r.erro}` : ''}.`, agora(), ...arquivos);
+      executar(`UPDATE eventos SET situacao = 'avisado', motivo = NULL, atualizado_em = ? WHERE id IN (${EVENTOS_DA_SOLICITACAO}) AND situacao IN ('disponivel', 'nao_recebido')`, agora(), s.id);
+    } else {
+      executar(`UPDATE eventos SET situacao = 'nao_recebido', motivo = ?, atualizado_em = ? WHERE id IN (${EVENTOS_DA_SOLICITACAO}) AND situacao = 'disponivel'`,
+        `Aviso sem 2xx depois de ${r.tentativas} tentativa(s)${r.erro ? `: ${r.erro}` : ''}.`, agora(), s.id);
     }
     return { id, resultado: r.resultado, status: r.status, tentativas: r.tentativas, mensagem: r.erro };
   };
@@ -189,21 +253,29 @@ export async function avisarSolicitacao(pocId: string, solicitacaoId: string, op
   if (!dom.ok) return fim({ resultado: 'erro', status: null, tentativas: 0, erro: dom.motivo });
   const token = lerSegredoPoc(poc.id, 'ibs_token_contrib');
   const req = { metodo: 'POST', url, cabecalhos: { 'Content-Type': 'application/json', ...(token ? { tokenContrib: token } : {}) }, corpo };
+  // T09 ligado: o primeiro 2xx deste aviso é descartado, e o mesmo aviso sai de novo.
+  const t09 = !opcoes.reenvioDe && armado(poc.id, 'T09', 'ibs');
+  if (t09) registrarInjecao(poc.id, 'T09', 'ibs', poc.dia, { tipo: 'aviso', id }, { idSolic: s.numero, tipoSolic: s.tipo });
   const esperas = [0, ...config.avisoEsperasMs];
+  if (t09 && esperas.length < 2) esperas.push(1000);
   let ultimo: Awaited<ReturnType<typeof enviarHttp>> | undefined;
   let n = 0;
+  let descartou = false;
   for (const espera of esperas) {
     if (espera) await esperar(espera);
     n++;
     ultimo = await enviarHttp(req, 10000);
     const ok = !!ultimo.status && ultimo.status >= 200 && ultimo.status < 300;
+    const descartar = ok && t09 && !descartou;
+    if (descartar) descartou = true;
     gravarRequisicao({
       execucao_id: null, destino_id: null, registro_id: null, operacao_id: null, fase: 'aviso', entidade: 'ibs', metodo: 'POST', url, status: ultimo.status ?? null,
       duracao_ms: ultimo.duracaoMs, tentativa: n, chave_idempotencia: null, req_cabecalhos: JSON.stringify(mascararCabecalhos(req.cabecalhos, ['tokenContrib'])),
-      req_corpo: corpo, res_cabecalhos: JSON.stringify(ultimo.cabecalhos), res_corpo: ultimo.corpoTexto.slice(0, 4000) || null, erro: ultimo.erro ?? null,
-      codigo_erro: null, resultado: ok ? 'ok' : 'erro', criado_em: agora(), usuario: usuarioAtual().usuario, rastreio: id, corpo_hash: sha256(corpo),
+      req_corpo: corpo, res_cabecalhos: JSON.stringify(ultimo.cabecalhos), res_corpo: ultimo.corpoTexto.slice(0, 4000) || null,
+      erro: descartar ? T09_DESCARTE : ultimo.erro ?? null, codigo_erro: null, resultado: ok && !descartar ? 'ok' : 'erro', criado_em: agora(), usuario: usuarioAtual().usuario,
+      rastreio: id, corpo_hash: sha256(corpo),
     });
-    if (ok) return fim({ resultado: 'ok', status: ultimo.status!, tentativas: n, duracao: ultimo.duracaoMs, resposta: ultimo.corpoTexto });
+    if (ok && !descartar) return fim({ resultado: 'ok', status: ultimo.status!, tentativas: n, duracao: ultimo.duracaoMs, resposta: ultimo.corpoTexto });
   }
   return fim({
     resultado: 'erro', status: ultimo?.status ?? null, tentativas: n, duracao: ultimo?.duracaoMs, resposta: ultimo?.corpoTexto,

@@ -536,6 +536,41 @@ const MIGRACOES: string[] = [
   ALTER TABLE avisos ADD COLUMN tiquete_id TEXT REFERENCES cbs_tiquetes(id) ON DELETE CASCADE;
   CREATE INDEX avisos_tiquete ON avisos (tiquete_id);
   `,
+  // 8 — Cobertura completa (v4.3, etapa 3): a defasagem da CBS, a nota fora do SplitHub (T08), os casos de transporte e
+  // falha ligados um a um e o que o MassGen provocou, e os arquivos do IBS que levaram cada evento (o Delta e o Manual)
+  `
+  ALTER TABLE pocs ADD COLUMN defasagem_cbs INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE notas ADD COLUMN splithub TEXT NOT NULL DEFAULT 'nao_conferido';
+  CREATE TABLE casos (
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    caso TEXT NOT NULL,
+    ligado INTEGER NOT NULL DEFAULT 0,
+    armado_ibs INTEGER NOT NULL DEFAULT 0,
+    armado_cbs INTEGER NOT NULL DEFAULT 0,
+    atualizado_por TEXT,
+    atualizado_em TEXT NOT NULL,
+    PRIMARY KEY (poc_id, caso)
+  );
+  CREATE TABLE injecoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    poc_id TEXT NOT NULL REFERENCES pocs(id) ON DELETE CASCADE,
+    caso TEXT NOT NULL,
+    ente TEXT NOT NULL,
+    dia TEXT NOT NULL,
+    ref_tipo TEXT,
+    ref_id TEXT,
+    detalhe TEXT NOT NULL DEFAULT '{}',
+    em TEXT NOT NULL
+  );
+  CREATE INDEX injecoes_poc ON injecoes (poc_id, caso);
+  CREATE TABLE ibs_arquivo_eventos (
+    arquivo_id TEXT NOT NULL REFERENCES arquivos(id) ON DELETE CASCADE,
+    evento_id TEXT NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
+    PRIMARY KEY (arquivo_id, evento_id)
+  );
+  CREATE INDEX ibs_arquivo_eventos_evento ON ibs_arquivo_eventos (evento_id);
+  INSERT INTO ibs_arquivo_eventos (arquivo_id, evento_id) SELECT arquivo_id, id FROM eventos WHERE ente = 'ibs' AND arquivo_id IS NOT NULL;
+  `,
 ];
 
 function migrar(): void {
@@ -577,6 +612,17 @@ export function transacao<T>(fn: () => T): T {
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
+  }
+}
+
+// Roda e desfaz: a prévia do plano e da troca de roteiro passa pelo mesmo caminho da gravação, sem gravar nada.
+// Tudo aqui é síncrono, então nenhuma outra requisição entra no meio.
+export function simular<T>(fn: () => T): T {
+  db.exec('BEGIN');
+  try {
+    return fn();
+  } finally {
+    db.exec('ROLLBACK');
   }
 }
 

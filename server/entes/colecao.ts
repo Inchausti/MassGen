@@ -3,7 +3,8 @@
 // define e o emulador precisou decidir vai declarado na descrição. Sem scripts.
 import { CATALOGO_IBS } from '../emulacao/catalogo.ts';
 import { CATALOGO_CBS } from '../emulacao/catalogo-cbs.ts';
-import { JANELA_DIAS, LIMITE_POR_DIA, VALIDADE_HORAS } from '../emulacao/cbs.ts';
+import { ERRO_408, JANELA_DIAS, LIMITE_POR_DIA, VALIDADE_HORAS } from '../emulacao/cbs.ts';
+import { MANUAIS_POR_DIA } from './ibs.ts';
 
 const url = (caminho: string) => ({ raw: `{{baseUrl}}${caminho}`, host: ['{{baseUrl}}'], path: caminho.split('/').filter(Boolean) });
 const json = (o: unknown) => ({ mode: 'raw', raw: JSON.stringify(o, null, 2), options: { raw: { language: 'json' } } });
@@ -15,6 +16,11 @@ const PROVISORIOS = [
   'Hash do extrato_cc (Pendência 1 do MOC): SHA-1 do hash anterior concatenado ao JSON da linha, lançamento a lançamento.',
   'MOV (Pendência 2 do MOC): texto da movimentação, exato como nos exemplos do Anexo II.',
   'Datas do Processamento Diário: o arquivo do dia D sai às 01:30 de D+1, com validade de 90 dias.',
+  'Nova Solicitação (Arquivo Manual): GET com corpo, como o MOC; quem não consegue mandar corpo num GET pode mandar os mesmos campos na query. Datas AAAA-MM-DD.',
+  `Regras do Arquivo Manual: ${MANUAIS_POR_DIA} por dia e ${MANUAIS_POR_DIA} por competência no mesmo dia (a POC pode relaxar), período numa única competência, sem sobreposição com outra manual ativa e só até o dia simulado. Sai no Processamento Diário seguinte, com o mesmo formato do Delta e tiposolicitacao "solicitação manual"; período sem lançamento gera um arquivo vazio.`,
+  'Recusas da Nova Solicitação, que o MOC não codifica: 400 (dados), 409 (sobreposição) e 429 (limite do dia). Cancelamento: 404 (não existe) e 409 (já processada ou não é manual). O corpo segue { resultado, mensagem }.',
+  'Validade da solicitação manual: vazia enquanto SOLICITADA; 90 dias a partir da geração.',
+  'Casos de transporte e falha da POC (ligados um a um na tela): T05 fatia uma operação em dois arquivos do Delta; T06 pula o Delta de um dia; T07 tira uma linha do Delta e mantém o hash acumulado com ela; T09 descarta o primeiro 2xx do próximo aviso e repete o mesmo aviso.',
   ...CATALOGO_IBS.filter((t) => t.nota).map((t) => `${t.id} (${t.mov}): ${t.nota}`),
 ];
 
@@ -38,6 +44,8 @@ export function colecaoIbs(baseUrl: string, clientId: string | null) {
       { key: 'nomeArq', value: '' },
       { key: 'dataIni', value: '' },
       { key: 'dataFim', value: '' },
+      { key: 'cnpj', value: '' },
+      { key: 'idSolic', value: '' },
     ],
     item: [
       {
@@ -55,6 +63,18 @@ export function colecaoIbs(baseUrl: string, clientId: string | null) {
       {
         name: '5.4 Listagem de Solicitações de Arquivos',
         request: { method: 'GET', header: credenciais, url: url('/v1/aassist/solicitacao/listar/{{dataIni}}&{{dataFim}}&todas'), description: 'Datas AAAA-MM-DD; situação solicitada, gerada, enviada, cancelada, expirada ou todas.' },
+      },
+      {
+        name: '5.5 Nova Solicitação (Arquivo Manual)',
+        request: {
+          method: 'GET', header: [...credenciais, { key: 'Content-Type', value: 'application/json' }],
+          body: json({ cnpj: '{{cnpj}}', dataTransacaoIni: '{{dataIni}}', dataTransacaoFim: '{{dataFim}}' }), url: url('/v1/aassist/solicitacao/incluir'),
+          description: 'Pede os lançamentos de um período (uma competência). A solicitação nasce SOLICITADA e o arquivo sai no próximo Processamento Diário, avisado no webhook como MANUAL.',
+        },
+      },
+      {
+        name: '5.6 Cancelamento de Solicitação',
+        request: { method: 'DELETE', header: credenciais, url: url('/v1/aassist/solicitacao/cancelamento/{{idSolic}}'), description: 'Só a solicitação manual ainda SOLICITADA pode ser cancelada.' },
       },
       {
         name: '5.2 Notificação de Disponibilização (o MassGen chama o SplitHub)',
@@ -82,6 +102,8 @@ const PROVISORIOS_CBS = [
   `Janela: ${JANELA_DIAS} dias até o pedido, ou desde o dia 1 do mês na primeira coleta do endpoint. O documento entra pelo atualizacao, a última mudança dele.`,
   `Link assinado: GET /download/v2/{assinatura}, sem token, válido por ${VALIDADE_HORAS} horas no relógio da POC. O reenvio do aviso repete o mesmo link. Baixar é a prova de recebimento.`,
   'Atendimento do pedido: PENDENTE, EM_PROCESSAMENTO e CONCLUIDA em menos de um segundo; tEASegundos "1". A documentação admite até 240 minutos.',
+  `Aviso de erro: o corpo é o da documentação, { codigoErro, mensagemErro } (por exemplo ${ERRO_408.codigo}), sem o tíquete. Para saber qual pedido falhou, use uma urlRetorno por pedido (um identificador na query serve) ou consulte /situacao/{tiquete}.`,
+  'Casos de transporte e falha da POC (ligados um a um na tela): T02 conclui o próximo pedido com o link já vencido (o download responde 410); T03 termina o próximo pedido em ERRO APURACAO-408; T09 descarta o primeiro 2xx do próximo aviso e repete o mesmo aviso.',
   'Horários: os eventos de um dia fechado entram com o atualizacao a partir das 10:00 desse dia; o arquivo do aviso sem pedido sai às 23:00.',
   'tipo do pagamento: 1 PCONT, 2 RAD e 3 split. A enumeração não foi publicada.',
   'Pagamento em atraso: multa de 10% e juros de 1% do principal, arredondados ao real, só para ilustrar.',

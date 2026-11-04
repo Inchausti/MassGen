@@ -41,6 +41,8 @@ export function SeloAviso({ a }: { a: { resultado?: string | null; status?: numb
   return <span className={`selo ${c}`} title={`${a.tentativas ?? 0} tentativa(s)${a.status ? `, HTTP ${a.status}` : ''}`}>{t}{a.status ? ` · ${a.status}` : ''}</span>;
 }
 
+export const SeloAusente = () => <span className="selo aviso sem-ponto" title="Marcada como não importada pelo SplitHub: os eventos dela só saem com &quot;incluir não importadas&quot; (T08)">Fora do SplitHub</span>;
+
 const SeloPapelNota = ({ papel }: { papel?: string | null }) => (papel ? <span className={`selo sem-ponto ${papel === 'adquirente' ? 'info' : 'destaque'}`}>{ROTULO_PAPEL_NOTA[papel]}</span> : <span className="dica">—</span>);
 
 export const ENTE: Record<string, { sigla: string; nome: string }> = {
@@ -65,7 +67,15 @@ export function efeitoDoItem(i: { ente: string; endpoint?: string; valores?: Rec
   return efeito(i.valores, i.ente === 'cbs' ? catalogo?.camposCbs ?? [] : catalogo?.campos ?? []);
 }
 
-const resumoDelta = (p: any) => `IBS, Delta ${p.idSolic} de ${diaBr(p.dia)}: ${numero(p.lancamentos)} lançamento(s) em ${p.arquivos.length} arquivo(s); aviso ${p.aviso?.resultado === 'ok' ? `aceito (${p.aviso.status})` : p.aviso?.resultado === 'sem_webhook' ? 'não enviado: o SplitHub não habilitou' : `sem 2xx${p.aviso?.status ? ` (${p.aviso.status})` : ''}`}`;
+export const diaCurto = (d?: string | null) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : '—');
+const periodoBr = (p?: [string, string] | null) => (!p ? '—' : p[0] === p[1] ? diaBr(p[0]) : `${diaCurto(p[0])} a ${diaBr(p[1])}`);
+
+const resumoAvisoIbs = (a: any) => (a?.resultado === 'ok' ? `aceito (${a.status})` : a?.resultado === 'sem_webhook' ? 'não enviado: o SplitHub não habilitou' : `sem 2xx${a?.status ? ` (${a.status})` : ''}`);
+const resumoDelta = (p: any) => {
+  if (p.semDelta) return `IBS de ${diaBr(p.dia)}: sem Delta nem aviso (T06); ${numero(p.lancamentos)} lançamento(s) esperam o Arquivo Manual`;
+  const nome = p.tipo === 'MANUAL' ? `Arquivo Manual ${p.idSolic}, período ${periodoBr(p.periodo)}` : `Delta ${p.idSolic} de ${diaBr(p.dia)}`;
+  return `IBS, ${nome}: ${numero(p.lancamentos)} lançamento(s) em ${p.arquivos.length} arquivo(s)${p.provocado ? ` (${p.provocado.caso})` : ''}; aviso ${resumoAvisoIbs(p.aviso)}`;
+};
 const resumoCbs = (c: any) => {
   const ok = c.avisos.filter((a: any) => a.resultado === 'ok').length;
   return `CBS de ${diaBr(c.dia)}: ${numero(c.eventos)} evento(s); ${c.tiquetes.length
@@ -172,7 +182,7 @@ export function Pocs() {
 
 // ---------------------------------------------------------------- detalhe
 
-type Aba = 'notas' | 'enviar' | 'barramento' | 'envios' | 'config';
+type Aba = 'notas' | 'cobertura' | 'enviar' | 'barramento' | 'envios' | 'config';
 
 function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   const { usuario } = useSessao();
@@ -189,7 +199,10 @@ function Relogio({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   };
   return (
     <div className="relogio" aria-label="Relógio da POC">
-      <div><div className="dica">Dia simulado</div><div className="relogio-dia">{diaBr(poc.dia)}</div></div>
+      <div>
+        <div className="dica">Dia simulado</div><div className="relogio-dia">{diaBr(poc.dia)}</div>
+        {(poc.proximos?.ibs || poc.proximos?.cbs) && <div className="dica" title="O próximo dia com evento planejado em cada ente">próximo: IBS {diaCurto(poc.proximos.ibs)} · CBS {diaCurto(poc.proximos.cbs)}</div>}
+      </div>
       {usuario.papel !== 'leitor' && <>
         <button className="botao" disabled={acao.ocupado} onClick={() => fechar({})} title="Gera o Delta do IBS e muda as fotos da CBS com os eventos planejados, avisa o SplitHub e passa ao dia seguinte">Fechar o dia</button>
         <input type="date" aria-label="Fechar até" value={ate} min={poc.dia} onChange={(e) => setAte(e.target.value)} />
@@ -230,6 +243,7 @@ export function PocDetalhe({ id }: { id: string }) {
       <Abas<Aba>
         abas={[
           { id: 'notas', rotulo: 'Notas', contagem: p.notas.aceitas + p.notas.fora },
+          { id: 'cobertura', rotulo: 'Cobertura' },
           { id: 'enviar', rotulo: 'Enviar eventos' },
           { id: 'barramento', rotulo: 'Barramento' },
           { id: 'envios', rotulo: 'Envios' },
@@ -240,8 +254,9 @@ export function PocDetalhe({ id }: { id: string }) {
       />
       <CaixaErro erro={catalogo.erro} />
       {aba === 'notas' && <AbaNotas poc={p} catalogo={catalogo.dados} versao={versao} aoMudar={mudou} />}
+      {aba === 'cobertura' && <AbaCobertura poc={p} versao={versao} aoMudar={mudou} />}
       {aba === 'enviar' && (catalogo.dados ? <AbaEnviar key={busca.get('notas') ?? ''} poc={p} catalogo={catalogo.dados} iniciais={(busca.get('notas') ?? '').split(',').filter(Boolean)} aoEnviar={mudou} /> : <Carregando />)}
-      {aba === 'barramento' && <AbaBarramento poc={p} versao={versao} aoMudar={mudou} />}
+      {aba === 'barramento' && <AbaBarramento poc={p} catalogo={catalogo.dados} versao={versao} aoMudar={mudou} />}
       {aba === 'envios' && <AbaEnvios poc={p} versao={versao} />}
       {aba === 'config' && <AbaConfig poc={p} aoMudar={mudou} />}
     </div>
@@ -279,7 +294,7 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
   const { navegar } = useRota();
   const { usuario } = useSessao();
   const acao = useAcao();
-  const [filtro, setFiltro] = useState({ busca: '', papel: '', situacao: '' });
+  const [filtro, setFiltro] = useState({ busca: '', papel: '', situacao: '', splithub: '' });
   const consulta = new URLSearchParams(Object.entries(filtro).filter(([, v]) => v)).toString();
   const { dados, erro, carregando, recarregar } = useCarregar(() => get(`/pocs/${poc.id}/notas${consulta ? `?${consulta}` : ''}`), [poc.id, consulta, versao]);
   const [marcadas, setMarcadas] = useState<Set<string>>(new Set());
@@ -296,6 +311,12 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
     if (r) { setResultado(r); recarregar(true); aoMudar(); }
   };
   const alternar = (id: string) => setMarcadas((m) => { const n = new Set(m); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  // T08: até a conferência pela API do SplitHub (etapa 4), quem diz que a nota não está lá é o operador.
+  const marcarAusente = async (ausente: boolean) => {
+    const r = await acao.executar(() => put(`/pocs/${poc.id}/notas/splithub`, { notaIds: [...marcadas], splithub: ausente ? 'ausente' : 'nao_conferido' }),
+      ausente ? `${numero(marcadas.size)} nota(s) marcada(s) como fora do SplitHub. Elas só saem com "incluir não importadas" (T08).` : `${numero(marcadas.size)} nota(s) de volta a não conferidas no SplitHub.`);
+    if (r) { recarregar(true); aoMudar(); }
+  };
   const aceitas = (dados ?? []).filter((n: any) => n.situacao === 'aceita');
   const todasMarcadas = aceitas.length > 0 && aceitas.every((n: any) => marcadas.has(n.id));
 
@@ -314,11 +335,14 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
             <input type="search" placeholder="Chave, número, CNPJ ou nome" value={filtro.busca} onChange={(e) => setFiltro({ ...filtro, busca: e.target.value })} style={{ flex: '1 1 220px' }} />
             <select aria-label="Papel" value={filtro.papel} onChange={(e) => setFiltro({ ...filtro, papel: e.target.value })}><option value="">Entrada e saída</option><option value="adquirente">Entrada</option><option value="fornecedor">Saída</option></select>
             <select aria-label="Situação" value={filtro.situacao} onChange={(e) => setFiltro({ ...filtro, situacao: e.target.value })}><option value="">Aceitas e de fora</option><option value="aceita">Aceitas</option><option value="fora">De fora</option></select>
+            <select aria-label="No SplitHub" value={filtro.splithub} onChange={(e) => setFiltro({ ...filtro, splithub: e.target.value })}><option value="">No SplitHub ou fora</option><option value="ausente">Fora do SplitHub (T08)</option><option value="nao_conferido">Não conferidas</option></select>
           </div>
           {pode && marcadas.size > 0 && (
             <div className="alerta info"><div className="linha-flex" style={{ flex: 1 }}>
               <strong>{numero(marcadas.size)} marcada(s)</strong><span className="espaco" />
               <button className="botao pequeno" onClick={() => setMarcadas(new Set())}>Desmarcar</button>
+              <button className="botao pequeno" disabled={acao.ocupado} onClick={() => marcarAusente(true)} title="Para o T08: a nota que o SplitHub não importou">Fora do SplitHub</button>
+              <button className="botao pequeno" disabled={acao.ocupado} onClick={() => marcarAusente(false)}>No SplitHub</button>
               <button className="botao pequeno" onClick={() => setRoteiro(true)}>Aplicar roteiro</button>
               <button className="botao primario pequeno" onClick={() => navegar(`/pocs/${poc.id}?aba=enviar&notas=${[...marcadas].join(',')}`)}>Enviar eventos</button>
             </div></div>
@@ -341,6 +365,7 @@ function AbaNotas({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any;
                     {n.situacao === 'fora' && <div><span className="selo aviso sem-ponto" title={n.motivo}>De fora</span> <span className="dica">{n.motivo}</span></div>}
                     {n.finalidade !== 'normal' && <span className="selo sem-ponto">{ROTULO_FINALIDADE[n.finalidade] ?? n.finalidade}</span>}
                     {n.canceladaEm && <span className="selo erro sem-ponto">Cancelada</span>}
+                    {n.splithub === 'ausente' && <SeloAusente />}
                   </td>
                   <td><SeloPapelNota papel={n.papel} /></td>
                   <td>{contra?.nome ?? '—'}<div className="dica mono">{contra?.doc ?? ''}</div></td>
@@ -398,20 +423,23 @@ function AplicarRoteiro({ poc, catalogo, notaIds, aoFechar, aoAplicar }: { poc: 
   const roteiros = catalogo.roteiros;
   const [roteiro, setRoteiro] = useState<string>(roteiros[0]?.id ?? '');
   const [intervalo, setIntervalo] = useState(1);
+  const [defasagem, setDefasagem] = useState<number>(poc.defasagemCbs ?? 0);
+  const [ausentes, setAusentes] = useState(false);
   const [previa, setPrevia] = useState<any>(null);
   const [erroPrevia, setErroPrevia] = useState<any>(null);
   const chave = notaIds.join(',');
-  // A prévia acompanha o roteiro e o intervalo escolhidos.
+  const corpo = { notaIds, roteiro, intervaloDias: intervalo, defasagem, incluirAusentes: ausentes };
+  // A prévia acompanha o roteiro, o intervalo e a defasagem escolhidos.
   useEffect(() => {
     let vivo = true;
     setPrevia(null);
-    post(`/pocs/${poc.id}/roteiros/previa`, { notaIds: chave.split(','), roteiro, intervaloDias: intervalo })
+    post(`/pocs/${poc.id}/roteiros/previa`, { ...corpo, notaIds: chave.split(',') })
       .then((r) => { if (vivo) { setPrevia(r); setErroPrevia(null); } }, (e) => { if (vivo) setErroPrevia(e); });
     return () => { vivo = false; };
-  }, [poc.id, chave, roteiro, intervalo]);
+  }, [poc.id, chave, roteiro, intervalo, defasagem, ausentes]);
   const r = roteiros.find((x: any) => x.id === roteiro);
   const aplicar = async () => {
-    const res = await acao.executar(() => post(`/pocs/${poc.id}/roteiros`, { notaIds, roteiro, intervaloDias: intervalo }));
+    const res = await acao.executar(() => post(`/pocs/${poc.id}/roteiros`, corpo));
     if (res) { avisar(`${roteiro}: ${numero(res.itens.length)} evento(s) planejado(s) até ${diaBr(res.ultimoDia)}. Eles saem quando o relógio fechar cada dia.`); aoAplicar(); }
   };
   return (
@@ -428,13 +456,213 @@ function AplicarRoteiro({ poc, catalogo, notaIds, aoFechar, aoAplicar }: { poc: 
         <Campo rotulo="Dias entre um passo e o seguinte" ajuda={`O primeiro passo cai em ${diaBr(poc.dia)} ou na emissão, o que vier depois.`}>
           <input type="number" min={0} max={30} value={intervalo} onChange={(e) => setIntervalo(Number(e.target.value))} />
         </Campo>
+        <Campo rotulo="Defasagem da CBS, em dias" ajuda="Positivo: a CBS começa tantos dias depois do IBS; negativo: antes. Zero: os dois entes no mesmo dia. O padrão vem da configuração da POC.">
+          <input type="number" min={-30} max={30} value={defasagem} onChange={(e) => setDefasagem(Number(e.target.value))} />
+        </Campo>
       </div>
-      <p className="dica">Só nas notas sem evento nos entes do roteiro. Os dois entes partem do mesmo dia; se um deles não couber, a nota fica de fora inteira. RT-A7, RT-A8, RT-A9 e RT-F8 só têm CBS. Se depois você enviar sob demanda um tipo que o roteiro já planejou, o planejado vira substituído.</p>
+      <label className="check"><input type="checkbox" checked={ausentes} onChange={(e) => setAusentes(e.target.checked)} /> Incluir não importadas: as notas marcadas como fora do SplitHub entram também (T08)</label>
+      <p className="dica">Só nas notas sem evento nos entes do roteiro. Com a defasagem, o ente que vem depois começa mais tarde; se um deles não couber, a nota fica de fora inteira. RT-A7, RT-A8, RT-A9 e RT-F8 só têm CBS. Se depois você enviar sob demanda um tipo que o roteiro já planejou, o planejado vira substituído.</p>
       {!previa && !erroPrevia ? <Carregando texto="Montando a prévia…" /> : previa && <>
         <Bloqueios lista={previa.bloqueios} />
         {previa.itens.length > 0 && <TabelaPlano itens={previa.itens} catalogo={catalogo} comDia />}
       </>}
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------- plano e cobertura (seção 08; D-MG-04 a D-MG-06)
+
+const COR_SITUACAO_TIPO = (s: string) =>
+  s === 'coberto' ? 'ok' : s === 'não recebido' ? 'erro' : s === 'não baixado' || s.startsWith('disponível') ? 'destaque' : s.startsWith('planejado') ? 'info' : s.startsWith('falta') ? 'aviso' : '';
+const SeloSituacaoTipo = ({ s }: { s: string }) => <span className={`selo ${COR_SITUACAO_TIPO(s)}`}>{s.charAt(0).toUpperCase() + s.slice(1)}</span>;
+
+const MOTIVO_PLANO: Record<string, string> = {
+  feliz: 'caminho feliz: não acrescenta tipo novo',
+  caso: 'caminho feliz, com dois passos do IBS no mesmo dia, para o T05 e o T07',
+};
+
+function Faltam({ lista }: { lista: { texto: string }[] }) {
+  if (!lista.length) return null;
+  return (
+    <div className="alerta aviso"><div>
+      <strong>O lote não cobre tudo; nenhuma nota é inventada (D-MG-05):</strong>
+      <ul>{lista.map((f, k) => <li key={k}>{f.texto}</li>)}</ul>
+    </div></div>
+  );
+}
+
+function MontarPlano({ poc, refazer: refazerInicial, aoFechar, aoAplicar }: { poc: any; refazer: boolean; aoFechar: () => void; aoAplicar: () => void }) {
+  const acao = useAcao();
+  const avisar = useAvisos();
+  const [refazer, setRefazer] = useState(refazerInicial);
+  const [intervalo, setIntervalo] = useState(1);
+  const [defasagem, setDefasagem] = useState<number>(poc.defasagemCbs ?? 0);
+  const [previa, setPrevia] = useState<any>(null);
+  const [erroPrevia, setErroPrevia] = useState<any>(null);
+  const corpo = { refazer, intervaloDias: intervalo, defasagem };
+  // A prévia roda o mesmo plano no banco e desfaz: o que ela mostra é o que o botão grava.
+  useEffect(() => {
+    let vivo = true;
+    setPrevia(null);
+    setErroPrevia(null);
+    post(`/pocs/${poc.id}/plano/previa`, corpo).then((r) => { if (vivo) setPrevia(r); }, (e) => { if (vivo) setErroPrevia(e); });
+    return () => { vivo = false; };
+  }, [poc.id, refazer, intervalo, defasagem]);
+  const aplicar = async () => {
+    const r = await acao.executar(() => post(`/pocs/${poc.id}/plano`, corpo));
+    if (r) { avisar(`Plano ${refazer ? 'refeito' : 'montado'}: ${numero(r.notas)} nota(s) em ${numero(r.envios.length)} envio(s), ${numero(r.eventos)} evento(s). Eles saem quando o relógio fechar cada dia.`); aoAplicar(); }
+  };
+  const c = previa?.cobertura;
+  const tipos = c ? c.porEnte.ibs.meta + c.porEnte.cbs.meta : 0;
+  const comNota = c ? [...c.ibs, ...c.cbs].filter((l: any) => l.notas > 0).length : 0;
+  return (
+    <Modal titulo={refazer ? 'Refazer o plano de cobertura' : 'Montar o plano de cobertura'} aoFechar={aoFechar}
+      rodape={<><button className="botao" onClick={aoFechar}>Cancelar</button><button className="botao primario" disabled={acao.ocupado || !previa || (!previa.envios.length && !previa.liberadas.notas)} onClick={aplicar}>{refazer ? 'Refazer' : 'Planejar'} {previa ? numero(previa.eventos) : ''} evento(s)</button></>}>
+      <CaixaErro erro={acao.erro ?? erroPrevia} />
+      <div className="grade grade-2">
+        <Campo rotulo="Dias entre um passo e o seguinte"><input type="number" min={0} max={30} value={intervalo} onChange={(e) => setIntervalo(Number(e.target.value))} /></Campo>
+        <Campo rotulo="Defasagem da CBS, em dias" ajuda="Positivo: a CBS começa depois do IBS; negativo: antes.">
+          <input type="number" min={-30} max={30} value={defasagem} onChange={(e) => setDefasagem(Number(e.target.value))} />
+        </Campo>
+      </div>
+      <label className="check"><input type="checkbox" checked={refazer} onChange={(e) => setRefazer(e.target.checked)} /> Refazer: as notas que só têm eventos planejados por roteiro voltam a ficar livres e entram no plano de novo</label>
+      <p className="dica">O plano cobre primeiro os tipos que faltam (D-MG-04): as notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta tipo novo segue o caminho feliz. As notas marcadas como fora do SplitHub só entram com o T08 ligado. Depois, troque o roteiro de qualquer nota na página dela.</p>
+      {!previa && !erroPrevia ? <Carregando texto="Montando a prévia…" /> : previa && <>
+        <div className="alerta info"><div>
+          <strong>{numero(previa.notas)} nota(s) em {numero(previa.envios.length)} envio(s), {numero(previa.eventos)} evento(s).</strong> Com o plano, {numero(comNota)} dos {numero(tipos)} tipos dos dois entes têm nota.
+          {previa.liberadas.notas > 0 && <> {numero(previa.liberadas.notas)} nota(s) liberada(s): {numero(previa.liberadas.eventos)} evento(s) planejado(s) viram substituídos.</>}
+        </div></div>
+        <Faltam lista={c.faltam} />
+        {previa.semPlano.length > 0 && <Bloqueios lista={previa.semPlano} />}
+        {!previa.envios.length && <Vazio titulo="Nenhuma nota livre">Todas as notas já têm roteiro ou eventos.{!refazer && ' Marque Refazer para liberar as que só têm eventos planejados.'}</Vazio>}
+        {previa.envios.length > 0 && (
+          <div className="tabela-wrap"><table className="tabela">
+            <thead><tr><th>Roteiro</th><th>Início</th><th className="num">Eventos</th><th>Notas e o que cada uma acrescenta</th></tr></thead>
+            <tbody>{previa.envios.map((e: any, k: number) => (
+              <tr key={k}>
+                <td><span className="selo sem-ponto mono">{e.roteiro}</span><div className="dica">{e.historia}</div></td>
+                <td className="nowrap">{diaBr(e.inicio)}<div className="dica">{numero(e.intervalo)} dia(s) entre passos</div></td>
+                <td className="num">{numero(e.eventos)}</td>
+                <td><div className="pilha" style={{ gap: 4 }}>{e.notas.map((n: any) => (
+                  <div key={n.id}>{n.rotulo}: {n.motivo === 'cobre' ? <span className="chip-lista">{n.novos.map((t: string) => <span key={t} className="chip mono">{t}</span>)}</span> : <span className="dica">{MOTIVO_PLANO[n.motivo]}</span>}</div>
+                ))}</div></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+      </>}
+    </Modal>
+  );
+}
+
+function TabelaTipos({ pocId, linhas }: { pocId: string; linhas: any[] }) {
+  return (
+    <div className="tabela-wrap"><table className="tabela">
+      <thead><tr><th>Tipo</th><th className="num">Notas no plano</th><th className="num">Avisado</th><th className="num">Recebido</th><th>Situação</th></tr></thead>
+      <tbody>{linhas.map((l) => (
+        <tr key={l.id}>
+          <td><span className="mono">{l.id}</span> {l.mov}<div className="dica">{l.grupo}{l.roteiros.length ? ` · ${l.roteiros.join(', ')}` : ''}</div></td>
+          <td className="num">{numero(l.notas)}{l.exemplos.length > 0 && <div className="dica">{l.exemplos.map((e: any, k: number) => <span key={e.id}>{k ? ', ' : ''}<Link para={`/pocs/${pocId}/notas/${e.id}`}>{e.rotulo}</Link></span>)}</div>}</td>
+          <td className="num">{numero(l.avisado)}</td>
+          <td className="num">{numero(l.recebido)}</td>
+          <td><SeloSituacaoTipo s={l.situacao} />{l.falta && <div className="dica">precisa de {l.falta}</div>}</td>
+        </tr>
+      ))}</tbody>
+    </table></div>
+  );
+}
+
+// O selo já diz armado, provocado ou à espera, e a coluna do SplitHub já diz o que fecha o caso: sobra o meio caminho
+// do T09 e onde o MassGen ainda vai provocar.
+const detalheCaso = (s: string) => s.split(' · ').filter((p) => !/^(armado|provocado|espera o SplitHub|coberto$|desligado$)/.test(p)).join(' · ');
+
+function TabelaCasos({ poc, casos, leitor, aoMudar }: { poc: any; casos: any[]; leitor: boolean; aoMudar: () => void }) {
+  const acao = useAcao();
+  const definir = async (c: any, corpo: { ligado?: boolean; rearmar?: boolean }, msg: string) => {
+    if ((await acao.executar(() => put(`/pocs/${poc.id}/casos/${c.id}`, corpo), msg)) !== undefined) aoMudar();
+  };
+  const selo = (c: any) => c.coberto ? ['ok', 'Coberto'] : !c.ligado ? ['', 'Desligado'] : c.armado.length ? ['info', 'Armado'] : c.provocacoes.length ? ['aviso', 'Provocado'] : ['aviso', 'Espera o SplitHub'];
+  return <>
+    <CaixaErro erro={acao.erro} />
+    <div className="tabela-wrap"><table className="tabela">
+      <thead><tr><th>Caso</th><th>Ente</th><th>O SplitHub precisa</th><th>O MassGen</th><th>Situação</th>{!leitor && <th>Ações</th>}</tr></thead>
+      <tbody>{casos.map((c) => {
+        const [cor, rotulo] = selo(c);
+        return (
+          <tr key={c.id}>
+            <td><span className="mono">{c.id}</span> {c.nome}</td>
+            <td className="nowrap">{c.ente === 'ambos' ? <><SeloEnte ente="ibs" /> <SeloEnte ente="cbs" /></> : <SeloEnte ente={c.ente} />}</td>
+            <td>{c.espera}<div className="dica">Fecha com: {c.comoFechar}</div></td>
+            <td className="dica">{c.provoca}{c.provocacoes.length > 0 && <div>Provocado: {c.provocacoes.map((p: any) => `${ENTE[p.ente].sigla} em ${diaCurto(p.dia)}`).join(', ')}</div>}</td>
+            <td><span className={`selo ${cor}`}>{rotulo}</span>{detalheCaso(c.situacao) && <div className="dica">{detalheCaso(c.situacao)}</div>}</td>
+            {!leitor && <td><div className="linha-flex">
+              <label className="check"><input type="checkbox" checked={c.ligado} disabled={acao.ocupado} onChange={(e) => definir(c, { ligado: e.target.checked }, `${c.id} ${e.target.checked ? 'ligado: entra na meta' : 'desligado: sai da meta'}.`)} /> Ligado</label>
+              {c.ligado && c.arma.length > 0 && <button className="botao pequeno" disabled={acao.ocupado || c.armado.length === c.arma.length} onClick={() => definir(c, { rearmar: true }, `${c.id} armado de novo: o MassGen provoca na próxima oportunidade.`)}>Provocar de novo</button>}
+            </div></td>}
+          </tr>
+        );
+      })}</tbody>
+    </table></div>
+  </>;
+}
+
+type SubCobertura = 'ibs' | 'cbs' | 'casos';
+
+function AbaCobertura({ poc, versao, aoMudar }: { poc: any; versao: number; aoMudar: () => void }) {
+  const { usuario } = useSessao();
+  const leitor = usuario.papel === 'leitor';
+  const { dados, erro, recarregar } = useCarregar(() => get(`/pocs/${poc.id}/cobertura`), [poc.id, versao], 5000);
+  const [sub, setSub] = useState<SubCobertura>('ibs');
+  const [plano, setPlano] = useState<{ refazer: boolean } | null>(null);
+  if (!dados) return erro ? <CaixaErro erro={erro} /> : <Carregando />;
+  const d = dados;
+  const naoLigados = d.casos.filter((c: any) => !c.ligado).length;
+  const noPlano = [...d.ibs, ...d.cbs].filter((l: any) => !l.coberto && l.notas > 0).length + d.casos.filter((c: any) => c.ligado && !c.coberto).length;
+  const pct = (n: number) => `${d.meta ? (100 * n) / d.meta : 0}%`;
+  const fracao = (e: { meta: number; recebidos: number }) => `${numero(e.recebidos)}/${numero(e.meta)}`;
+  const mudou = () => { recarregar(true); aoMudar(); };
+  return (
+    <div className="pilha">
+      <CaixaErro erro={erro} />
+      <Painel titulo="Cobertura da POC" acoes={!leitor && <>
+        <button className="botao pequeno" onClick={() => setPlano({ refazer: true })}>Refazer plano</button>
+        <button className="botao primario pequeno" onClick={() => setPlano({ refazer: false })}>Montar plano</button>
+      </>}>
+        <div className="pilha">
+          <div className="linha-flex">
+            <strong className="cobertura-total">{numero(d.recebidos)} de {numero(d.meta)} tipos recebidos</strong>
+            <span className="dica">IBS {fracao(d.porEnte.ibs)} · CBS {fracao(d.porEnte.cbs)} · transporte e falha {fracao(d.porEnte.casos)}</span>
+          </div>
+          <div className="progresso" role="progressbar" aria-label="Tipos recebidos" aria-valuemin={0} aria-valuemax={d.meta} aria-valuenow={d.recebidos}>
+            <span className="ok" style={{ width: pct(d.recebidos) }} /><span className="neutro" style={{ width: pct(noPlano) }} />
+          </div>
+          <div className="dica">Verde: o SplitHub baixou um arquivo com o tipo. Cinza: o tipo está no plano ou à espera do SplitHub. O tipo conta quando chega a pelo menos uma nota.</div>
+          <dl className="kv">
+            <dt>Notas livres</dt><dd>{numero(d.notasLivres)} <span className="dica">sem roteiro nem evento, prontas para o plano</span></dd>
+            <dt>Próximo dia planejado</dt><dd>IBS {diaBr(d.proximos.ibs)} · CBS {diaBr(d.proximos.cbs)}</dd>
+            <dt>Defasagem da CBS</dt><dd>{d.defasagem ? `${d.defasagem > 0 ? '+' : ''}${d.defasagem} dia(s)` : 'nenhuma: os dois entes no mesmo dia'} <span className="dica">o padrão fica na Configuração</span></dd>
+          </dl>
+          {naoLigados > 0 && <div className="alerta info"><div>{numero(naoLigados)} dos {numero(d.porEnte.casos.catalogo)} casos de transporte e falha estão desligados e ficam fora da meta. Ligue-os na aba Transporte e falha para a meta chegar a {numero(d.porEnte.ibs.meta + d.porEnte.cbs.meta + d.porEnte.casos.catalogo)}.</div></div>}
+          <Faltam lista={d.faltam} />
+          <p className="dica">Feche os dias no relógio, lá em cima, para os eventos planejados saírem. O plano não chama o SplitHub: os entes emulados avisam, e o tipo só conta quando o SplitHub baixa.</p>
+        </div>
+      </Painel>
+      <Abas<SubCobertura>
+        abas={[
+          { id: 'ibs', rotulo: 'IBS', contagem: fracao(d.porEnte.ibs) },
+          { id: 'cbs', rotulo: 'CBS', contagem: fracao(d.porEnte.cbs) },
+          { id: 'casos', rotulo: 'Transporte e falha', contagem: fracao(d.porEnte.casos) },
+        ]}
+        ativa={sub}
+        aoMudar={setSub}
+      />
+      <Painel semPad>
+        {sub === 'ibs' && <TabelaTipos pocId={poc.id} linhas={d.ibs} />}
+        {sub === 'cbs' && <TabelaTipos pocId={poc.id} linhas={d.cbs} />}
+        {sub === 'casos' && <TabelaCasos poc={poc} casos={d.casos} leitor={leitor} aoMudar={mudou} />}
+      </Painel>
+      {plano && <MontarPlano poc={poc} refazer={plano.refazer} aoFechar={() => setPlano(null)} aoAplicar={() => { setPlano(null); mudou(); }} />}
+    </div>
   );
 }
 
@@ -450,6 +678,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
   const [marcadas, setMarcadas] = useState<Set<string>>(new Set(iniciais));
   const [tipos, setTipos] = useState<Map<string, Escolha>>(new Map());
   const [forcar, setForcar] = useState(false);
+  const [ausentes, setAusentes] = useState(false);
   const [previa, setPrevia] = useState<any>(null);
   const [feito, setFeito] = useState<any>(null);
   const root = usuario.papel === 'root';
@@ -467,7 +696,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
   const alternarTipo = (n: string) => { invalidar(); setTipos((m) => { const x = new Map(m); if (x.has(n)) x.delete(n); else x.set(n, { pct: '', valor: '' }); return x; }); };
   const ajustar = (n: string, campo: keyof Escolha, v: string) => { invalidar(); setTipos((m) => new Map(m).set(n, { ...m.get(n)!, [campo]: v })); };
   const corpo = () => ({
-    notaIds: [...marcadas], forcar,
+    notaIds: [...marcadas], forcar, incluirAusentes: ausentes,
     tipos: [...tipos].map(([tipo, e]) => ({ tipo, pct: e.pct || undefined, valor: forcar && e.valor ? Number(e.valor.replace(',', '.')) : undefined })),
   });
   const revisar = async () => { const r = await acao.executar(() => post(`/pocs/${poc.id}/envios/previa`, corpo())); if (r) setPrevia(r); };
@@ -495,7 +724,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
               <div className="lista-rolavel">{visiveis.map((n: any) => (
                 <label key={n.id} className={`opcao ${marcadas.has(n.id) ? 'marcada' : ''}`}>
                   <input type="checkbox" checked={marcadas.has(n.id)} onChange={() => alternarNota(n.id)} />
-                  <span className="opcao-texto"><strong>{n.rotulo}</strong> <SeloPapelNota papel={n.papel} />{n.finalidade !== 'normal' && <span className="selo sem-ponto">{ROTULO_FINALIDADE[n.finalidade]}</span>}{n.canceladaEm && <span className="selo erro sem-ponto">Cancelada</span>}
+                  <span className="opcao-texto"><strong>{n.rotulo}</strong> <SeloPapelNota papel={n.papel} />{n.finalidade !== 'normal' && <span className="selo sem-ponto">{ROTULO_FINALIDADE[n.finalidade]}</span>}{n.canceladaEm && <span className="selo erro sem-ponto">Cancelada</span>}{n.splithub === 'ausente' && <SeloAusente />}
                     <span className="dica"> IBS {moeda(n.vIbs)} · CBS {moeda(n.vCbs)} · {numero(n.eventos.total)} evento(s)</span></span>
                 </label>
               ))}</div>
@@ -544,6 +773,7 @@ function AbaEnviar({ poc, catalogo, iniciais, aoEnviar }: { poc: any; catalogo: 
           {root && (
             <label className="check"><input type="checkbox" checked={forcar} onChange={(e) => { invalidar(); setForcar(e.target.checked); }} /> Forçar: ignora a ordem, a unicidade, o saldo e a data, para testar a reação do SplitHub a um barramento fora da regra</label>
           )}
+          <label className="check"><input type="checkbox" checked={ausentes} onChange={(e) => { invalidar(); setAusentes(e.target.checked); }} /> Incluir não importadas: as notas marcadas como fora do SplitHub saem também, para o SplitHub gravar o movimento e abrir a inconsistência (T08)</label>
           {forcar && <div className="alerta erro"><div>O envio forçado sai como está, inclusive repetido ou sem saldo. Fica marcado como forçado no histórico e na trilha.</div></div>}
           <div className="linha-flex">
             <button className="botao" disabled={acao.ocupado || !marcadas.size || !tipos.size} onClick={revisar}>Revisar</button>
@@ -722,7 +952,23 @@ function PainelCbs({ poc, cbs, aoMudar, aoCredencial }: { poc: any; cbs: any; ao
   );
 }
 
-function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoMudar: () => void }) {
+const catalogoCaso = (catalogo: any, id: string) => (catalogo?.casos ?? []).find((c: any) => c.id === id);
+
+// Onde o MassGen provocou o caso, pelo detalhe que ele registrou.
+function onde(p: any): string {
+  const d = p.detalhe ?? {};
+  switch (p.caso) {
+    case 'T02': return `tíquete ${curto(d.tiquete ?? '')} em /${d.endpoint}: o link nasceu vencido`;
+    case 'T03': return `tíquete ${curto(d.tiquete ?? '')} em /${d.endpoint}: ERRO APURACAO-408`;
+    case 'T05': return `Delta ${d.idSolic}: a operação ${d.operacao} (${d.nota}) saiu em ${d.partes} arquivos`;
+    case 'T06': return `${numero(d.lancamentos)} lançamento(s) de ${numero(d.operacoes)} operação(ões) sem Delta`;
+    case 'T07': return `Delta ${d.idSolic}: o lançamento ${d.lancamento} da operação ${d.operacao} (${d.nota}) ficou de fora`;
+    case 'T09': return p.ente === 'ibs' ? `aviso da solicitação ${d.idSolic}: a primeira resposta 2xx foi descartada` : `aviso do tíquete ${curto(d.tiquete ?? '')} em /${d.endpoint}: a primeira resposta 2xx foi descartada`;
+    default: return '—';
+  }
+}
+
+function AbaBarramento({ poc, catalogo, versao, aoMudar }: { poc: any; catalogo: any; versao: number; aoMudar: () => void }) {
   const { usuario } = useSessao();
   const avisar = useAvisos();
   const acao = useAcao();
@@ -758,6 +1004,8 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
             <div className="pilha" style={{ gap: 6 }}>
               <div><Metodo m="POST" /> <code>/v1/aassist/habilitar</code> <span className="dica">5.1</span></div>
               <div><Metodo m="GET" /> <code>/v1/aassist/solicitacao/listar/{'{ini}&{fim}&{sit}'}</code> <span className="dica">5.4</span></div>
+              <div><Metodo m="GET" /> <code>/v1/aassist/solicitacao/incluir</code> <span className="dica">5.5, Arquivo Manual</span></div>
+              <div><Metodo m="DELETE" /> <code>/v1/aassist/solicitacao/cancelamento/{'{idSolic}'}</code> <span className="dica">5.6</span></div>
               <div><Metodo m="GET" /> <code>/v1/aassist/arquivo/{'{nomeArq}'}</code> <span className="dica">5.3, rota provisória</span></div>
               <div><Metodo m="POST" /> <code>webhookUrl</code> <span className="dica">5.2, o MassGen chama o SplitHub</span></div>
             </div>
@@ -766,13 +1014,14 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
         </div>
       </Painel>
       <Painel titulo="IBS · solicitações e arquivos" semPad>
-        {!dados ? <Carregando /> : !dados.solicitacoes.length ? <Vazio titulo="Nenhum Delta ainda">Aplique um roteiro ou envie eventos e feche o dia.</Vazio> : (
+        {!dados ? <Carregando /> : !dados.solicitacoes.length ? <Vazio titulo="Nenhum Delta ainda">Aplique um roteiro ou envie eventos e feche o dia. O Arquivo Manual que o SplitHub pedir em 5.5 também aparece aqui.</Vazio> : (
           <div className="tabela-wrap"><table className="tabela">
             <thead><tr><th>idSolic</th><th>Dia</th><th>Situação</th><th className="num">Operações</th><th>Arquivos</th><th>Avisos</th></tr></thead>
             <tbody>{dados.solicitacoes.map((s: any) => (
               <tr key={s.id}>
-                <td className="mono">{s.idSolic}<div className="dica">{s.tipo}</div></td>
-                <td className="nowrap">{diaBr(s.dia)}<div className="dica">válido até {diaBr(s.validade?.slice(0, 10))}</div></td>
+                <td><span className="mono">{s.idSolic}</span>
+                  <div>{s.tipo === 'MANUAL' ? <span className="selo info sem-ponto" title="Pedido pelo SplitHub em 5.5">Arquivo Manual</span> : <span className="selo sem-ponto">Delta</span>}{s.provocacao && <span className="selo aviso sem-ponto" title="O MassGen provocou este caso aqui">{s.provocacao}</span>}</div></td>
+                <td className="nowrap">{diaBr(s.dia)}{s.tipo === 'MANUAL' && <div className="dica">período {periodoBr(s.periodo)}</div>}{s.validade && <div className="dica">válido até {diaBr(s.validade.slice(0, 10))}</div>}</td>
                 <td><SeloSolicitacao s={s.situacao} /></td>
                 <td className="num">{numero(s.operacoes)}</td>
                 <td>{s.arquivos.map((a: any) => (
@@ -795,7 +1044,7 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
             <tbody>{dados.tiquetes.map((t: any) => (
               <tr key={t.id} className="clicavel" onClick={() => setTiquete(t.id)}>
                 <td><button className="botao fantasma pequeno mono" onClick={(e) => { e.stopPropagation(); setTiquete(t.id); }}>{curto(t.tiquete)}</button>
-                  <div>{t.origem === 'pedido' ? <span className="selo info sem-ponto">Pedido</span> : <span className="selo sem-ponto">Sem pedido</span>}</div></td>
+                  <div>{t.origem === 'pedido' ? <span className="selo info sem-ponto">Pedido</span> : <span className="selo sem-ponto">Sem pedido</span>}{t.provocacao && <span className="selo aviso sem-ponto" title="O MassGen provocou este caso aqui">{t.provocacao}</span>}</div></td>
                 <td className="mono">/{t.endpoint}</td>
                 <td className="nowrap">{diaBr(t.dia)}{t.janela && <div className="dica">desde {diaBr(t.janela[0].slice(0, 10))}</div>}</td>
                 <td><SeloTiquete t={t} /></td>
@@ -809,6 +1058,22 @@ function AbaBarramento({ poc, versao, aoMudar }: { poc: any; versao: number; aoM
           </table></div>
         )}
       </Painel>
+      {dados?.provocacoes?.length > 0 && (
+        <Painel titulo="Casos provocados pelo MassGen" semPad>
+          <div className="tabela-wrap"><table className="tabela">
+            <thead><tr><th>Quando</th><th>Caso</th><th>Ente</th><th>Dia simulado</th><th>Onde</th></tr></thead>
+            <tbody>{dados.provocacoes.map((p: any, k: number) => (
+              <tr key={k}>
+                <td className="nowrap">{quando(p.em)}</td>
+                <td><span className="mono">{p.caso}</span><div className="dica">{catalogoCaso(catalogo, p.caso)?.nome ?? ''}</div></td>
+                <td><SeloEnte ente={p.ente} /></td>
+                <td className="nowrap">{diaBr(p.dia)}</td>
+                <td className="dica">{onde(p)}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        </Painel>
+      )}
       <Painel titulo="Chamadas recebidas do SplitHub" semPad>
         {!dados ? <Carregando /> : !dados.chamadas.length ? <Vazio titulo="Nenhuma chamada">Quando o SplitHub da POC chamar um dos entes emulados, a chamada aparece aqui.</Vazio> : (
           <div className="tabela-wrap"><table className="tabela">
@@ -865,10 +1130,10 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
   const { usuario } = useSessao();
   const { navegar } = useRota();
   const acao = useAcao();
-  const [f, setF] = useState({ nome: poc.nome, lancamentosPorArquivo: String(poc.lancamentosPorArquivo), limitesRelaxados: !!poc.limitesRelaxados });
+  const [f, setF] = useState({ nome: poc.nome, lancamentosPorArquivo: String(poc.lancamentosPorArquivo), limitesRelaxados: !!poc.limitesRelaxados, defasagemCbs: String(poc.defasagemCbs ?? 0) });
   const leitor = usuario.papel === 'leitor';
   const salvar = async () => {
-    const corpo = { nome: f.nome, lancamentosPorArquivo: Number(f.lancamentosPorArquivo), limitesRelaxados: f.limitesRelaxados };
+    const corpo = { nome: f.nome, lancamentosPorArquivo: Number(f.lancamentosPorArquivo), limitesRelaxados: f.limitesRelaxados, defasagemCbs: Number(f.defasagemCbs) };
     if ((await acao.executar(() => put(`/pocs/${poc.id}`, corpo), 'POC salva.')) !== undefined) aoMudar();
   };
   const apagar = async () => {
@@ -886,10 +1151,13 @@ function AbaConfig({ poc, aoMudar }: { poc: any; aoMudar: () => void }) {
           <Campo rotulo="Lançamentos por arquivo" ajuda="Acima disso, a operação é fatiada em partes, com o cabeçalho repetido e o hash acumulado (Anexo I).">
             <input type="number" min={1} max={100000} value={f.lancamentosPorArquivo} disabled={leitor} onChange={(e) => setF({ ...f, lancamentosPorArquivo: e.target.value })} />
           </Campo>
+          <Campo rotulo="Defasagem da CBS, em dias" ajuda="O padrão do plano e dos roteiros: positivo, a CBS sai tantos dias depois do IBS; negativo, antes. Vale para o que for planejado daqui em diante.">
+            <input type="number" min={-30} max={30} value={f.defasagemCbs} disabled={leitor} onChange={(e) => setF({ ...f, defasagemCbs: e.target.value })} />
+          </Campo>
         </div>
         <label className="check" style={{ marginTop: 10 }}>
           <input type="checkbox" checked={f.limitesRelaxados} disabled={leitor} onChange={(e) => setF({ ...f, limitesRelaxados: e.target.checked })} />
-          Limites relaxados: a CBS emulada aceita mais de 4 pedidos por dia simulado em cada endpoint, para repetir um teste sem avançar o relógio
+          Limites relaxados: a CBS emulada aceita mais de 4 pedidos por dia simulado em cada endpoint, e o IBS emulado mais de 2 Arquivos Manuais por dia, para repetir um teste sem avançar o relógio
         </label>
         <dl className="kv" style={{ marginTop: 14 }}>
           <dt>CNPJ</dt><dd className="mono">{poc.cnpj}</dd>

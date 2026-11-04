@@ -340,6 +340,7 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 13px; }
 .relogio { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--linha); border-radius: var(--raio); background: var(--superficie); }
 .relogio-dia { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; margin-right: 6px; }
 .relogio input[type="date"] { width: auto; }
+.cobertura-total { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--tinta); }
 .lista-rolavel { max-height: 440px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
 .opcao { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 7px 10px; border: 1px solid var(--linha); border-radius: 6px; cursor: pointer; font-size: 13px; }
 .opcao:hover { background: var(--superficie-2); }

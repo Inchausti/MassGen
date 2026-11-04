@@ -32,18 +32,23 @@ export function cabecalhoOperacao(n: DadosOperacao): Record<string, unknown> {
 export interface OperacaoDoDia { cabecalho: Record<string, unknown>; linhas: { linha: Record<string, unknown>; hash: string; eventoId: string }[] }
 export interface Fatia { operacoes: { cabecalho: Record<string, unknown>; lista: Record<string, unknown>[]; hash: string; eventos: string[] }[]; lancamentos: number }
 
-export function fatiar(ops: OperacaoDoDia[], limite: number): Fatia[] {
+// quebraApos: o lançamento depois do qual a operação continua no arquivo seguinte, mesmo cabendo (caso T05).
+export function fatiar(ops: OperacaoDoDia[], limite: number, quebraApos?: string): Fatia[] {
   const max = Math.max(1, limite);
   const fatias: Fatia[] = [];
   let atual: Fatia = { operacoes: [], lancamentos: 0 };
   for (const op of ops) {
     let i = 0;
+    const q = quebraApos ? op.linhas.findIndex((l) => l.eventoId === quebraApos) : -1;
     while (i < op.linhas.length) {
       if (atual.lancamentos >= max) { fatias.push(atual); atual = { operacoes: [], lancamentos: 0 }; }
-      const parte = op.linhas.slice(i, i + (max - atual.lancamentos));
+      let fim = i + (max - atual.lancamentos);
+      if (q >= i && q + 1 < fim) fim = q + 1;
+      const parte = op.linhas.slice(i, fim);
       atual.operacoes.push({ cabecalho: op.cabecalho, lista: parte.map((p) => p.linha), hash: parte[parte.length - 1].hash, eventos: parte.map((p) => p.eventoId) });
       atual.lancamentos += parte.length;
       i += parte.length;
+      if (q === i - 1 && i < op.linhas.length) { fatias.push(atual); atual = { operacoes: [], lancamentos: 0 }; }
     }
   }
   if (atual.operacoes.length) fatias.push(atual);

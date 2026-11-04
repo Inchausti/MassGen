@@ -8,6 +8,7 @@ import { sha256 } from '../auditoria.ts';
 import { assinar } from '../cofre.ts';
 import { ENDPOINTS, TIPO_CBS, type Endpoint } from './catalogo-cbs.ts';
 import { montarArquivoCbs, type DadosCbs, type EventoCbs, type ItemArquivo } from './arquivo-cbs.ts';
+import { armado, registrarInjecao } from './casos.ts';
 import { somarDias, type NotaRow, type PocRow } from './execucao.ts';
 
 export interface TiqueteRow {
@@ -112,10 +113,23 @@ export function marcarProcessando(tiqueteId: string): TiqueteRow | undefined {
   return um<TiqueteRow>('SELECT * FROM cbs_tiquetes WHERE id = ?', tiqueteId);
 }
 
+export const ERRO_408 = { codigo: 'APURACAO-408', mensagem: 'Tempo limite de processamento excedido (240 minutos).' };
+
+// Casos de transporte e falha ligados (seção 07): T03 estoura o processamento; T02 conclui com o link já vencido.
 export function processarPedido(tiqueteId: string): TiqueteRow | undefined {
   const t = um<TiqueteRow>('SELECT * FROM cbs_tiquetes WHERE id = ?', tiqueteId);
   if (!t || t.estado === 'CONCLUIDA' || t.estado === 'ERRO') return t;
-  return concluirTiquete(t, selecionar(t.poc_id, t.endpoint, { janela: [t.janela_ini!, t.janela_fim!] }), t.janela_fim!);
+  if (armado(t.poc_id, 'T03', 'cbs')) {
+    executar("UPDATE cbs_tiquetes SET estado = 'ERRO', codigo_erro = ?, mensagem_erro = ?, concluido_em = ?, atualizado_em = ? WHERE id = ?",
+      ERRO_408.codigo, ERRO_408.mensagem, agora(), agora(), t.id);
+    registrarInjecao(t.poc_id, 'T03', 'cbs', t.dia, { tipo: 'tiquete', id: t.id }, { endpoint: t.endpoint, tiquete: t.tiquete });
+    return um<TiqueteRow>('SELECT * FROM cbs_tiquetes WHERE id = ?', t.id);
+  }
+  const c = concluirTiquete(t, selecionar(t.poc_id, t.endpoint, { janela: [t.janela_ini!, t.janela_fim!] }), t.janela_fim!);
+  if (!armado(t.poc_id, 'T02', 'cbs')) return c;
+  executar('UPDATE cbs_tiquetes SET expira_em = gerado_em, expirado_em = ?, atualizado_em = ? WHERE id = ?', agora(), agora(), t.id);
+  registrarInjecao(t.poc_id, 'T02', 'cbs', t.dia, { tipo: 'tiquete', id: t.id }, { endpoint: t.endpoint, tiquete: t.tiquete });
+  return um<TiqueteRow>('SELECT * FROM cbs_tiquetes WHERE id = ?', t.id);
 }
 
 // ---------------------------------------------------------------- fechamento do dia e validade dos links

@@ -463,7 +463,7 @@ test('substituição: o envio manual torna repetido o que o roteiro planejou, e 
 test('collection dos entes emulados e o fim da POC: as notas do cliente saem com ela', async () => {
   const r = await fetch(`${API}/pocs/${pocId}/collection`, { headers: { cookie } });
   const c = await r.json() as any;
-  assert.equal(c.item.length, 4);
+  assert.equal(c.item.length, 6);
   assert.equal(c.variable.find((v: any) => v.key === 'clientId').value, credencial.clientId);
   assert.equal(JSON.stringify(c).includes(credencial.clientSecret), false);
   assert.equal(JSON.stringify(c).includes('"event"'), false, 'sem scripts');

@@ -2,7 +2,7 @@
 
 Emulador da **apuração assistida** da CBS e do IBS para as POCs do SplitHub (proposta v4.3). As notas do cliente entram no SplitHub da POC e no MassGen. O MassGen faz o papel dos entes diante do SplitHub: monta o barramento de cada nota pela documentação deles, avisa o webhook e serve os arquivos, com o histórico de cada nota. Nada chama a Receita Federal, o Comitê Gestor ou o SplitHub de produção.
 
-Os dois entes estão prontos: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10, e a **Receita Federal emulada (CBS)**, pelas APIs de Apuração da CBS v2. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
+Os dois entes estão prontos: o **Comitê Gestor emulado (IBS)**, pelo MOC v1.10, e a **Receita Federal emulada (CBS)**, pelas APIs de Apuração da CBS v2. Por cima deles, o **plano e o painel de cobertura** fecham os 59 tipos com um lote só: os 24 do IBS, os 26 da CBS e os 9 casos de transporte e falha. Veja [POC da apuração assistida](#poc-da-apuração-assistida).
 
 O gerador de massa genérico das versões anteriores continua no app, fora do menu (D-MG-01): veja [Gerador genérico](#gerador-genérico-fora-do-menu).
 
@@ -47,23 +47,33 @@ Cada POC é um cliente e uma competência. O caminho, pelo menu **POCs**:
 2. **Notas:** importe os mesmos XMLs que o SplitHub da POC importou, soltos ou num ZIP, até 18 MB por vez. Entram NF-e autorizadas de produção com o grupo de IBS e CBS (D-MG-10); o resto fica de fora, com o motivo. O CNPJ raiz diz se a nota é de entrada ou de saída. O XML de cancelamento marca a nota; a complementar e a de devolução se ligam à original. Na CBS, cada nota é um documento.
 3. **Habilitação (IBS):** o SplitHub da POC chama `POST /entes/ibs/v1/aassist/habilitar` com a credencial, a `webhookUrl` (HTTPS; `http` só em `localhost`) e o `tokenContrib`, como faria com o Comitê Gestor. A `webhookUrl` passa pela trava de domínios (`ALLOWED_DESTINATION_DOMAINS`).
 4. **Pedido (CBS):** a CBS não tem habilitação. O SplitHub pega o token em `POST /entes/cbs/token` e pede cada endpoint (débitos, créditos, pagamentos, recolhimentos) com a `urlRetorno`, como faria com a Receita Federal. A `urlRetorno` passa pela mesma trava e pelo `HEAD`, que precisa de 2xx. A resposta é o tíquete; o MassGen atende, avisa a `urlRetorno` com o link assinado, e o SplitHub baixa o JSON por ele. Veja as [rotas](#rotas-da-receita-federal-emulada-cbs).
-5. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A9, RT-F1 a RT-F8). Os roteiros com IBS e CBS soltam os eventos dos dois entes nos mesmos dias. RT-A7, RT-A8, RT-A9 e RT-F8 são só da CBS. A prévia mostra cada evento no dia em que vai sair, com o ente. Os eventos ficam *planejados*.
-6. **Enviar eventos (sob demanda):** escolha as notas e os tipos, agrupados por ente: E-IBS-01 a E-IBS-24 e os 26 da CBS (E-CBS-D01 a D07, C01 a C12, P01 a P04, R01 a R03), com o percentual nos parciais. O que falta antes entra sozinho como pré-requisito (D-MG-13); a prévia mostra o que entra e o que não cabe, com o motivo. *Executar e enviar* fecha o dia simulado na hora (D-MG-14). Só root pode **forçar** (ignorar ordem, unicidade, saldo e data) para testar a reação do SplitHub.
-7. **Relógio:** *Fechar o dia* gera o Delta do IBS com os eventos planejados e avisa o webhook. Na CBS, com a `urlRetorno` validada, abre um tíquete por endpoint que mudou e avisa sem pedido (D-MG-03); sem ela, os eventos esperam o pedido. Depois passa ao dia seguinte. *Fechar até* faz isso dia a dia até a data. O relógio não volta.
+5. **Roteiros:** marque notas e *Aplicar roteiro* (RT-A1 a RT-A9, RT-F1 a RT-F8). Os roteiros com IBS e CBS soltam os eventos dos dois entes nos mesmos dias, a menos que haja **defasagem**: com +2, a CBS começa dois dias depois do IBS; com −2, dois dias antes. O padrão fica em *Configuração › Defasagem da CBS* (de −30 a 30), e o roteiro e o plano aceitam outro valor. RT-A7, RT-A8, RT-A9 e RT-F8 são só da CBS. A prévia mostra cada evento no dia em que vai sair, com o ente. Os eventos ficam *planejados*.
+6. **Cobertura:** a aba mostra **quantos dos tipos o SplitHub já recebeu** (por exemplo, *16 de 59 tipos recebidos*), com uma tabela por ente (IBS, CBS) e outra dos casos de transporte e falha. Cada tipo traz as notas no plano, quantas foram avisadas e recebidas, e a situação: *coberto*, *não baixado*, *não recebido*, *disponível*, *planejado* (com o dia) ou o XML que falta. O tipo só conta quando o SplitHub baixa um arquivo com ele.
+   - ***Montar plano*** dá a cada nota livre o roteiro que cobre o que ainda falta (D-MG-04): as notas com cancelamento, complementar ou devolução vão antes, porque só elas abrem certos tipos; a nota que não acrescenta tipo novo segue o caminho feliz (RT-A1 ou RT-F1). A prévia roda o plano e desfaz, então mostra exatamente o que o botão grava: os envios, as notas e o que cada uma acrescenta. ***Refazer plano*** libera antes as notas que só têm eventos planejados por roteiro.
+   - **O que o lote não cobre** vem numa frase por XML (D-MG-05), como *Para cobrir E-IBS-19 e E-IBS-20, o lote precisa de uma NF-e de devolução de uma nota de entrada.* O MassGen nunca inventa uma nota.
+7. **Casos de transporte e falha (T01 a T09):** na aba *Cobertura › Transporte e falha*, cada caso começa desligado. Ligar põe o caso na meta; com os nove ligados, a meta é 59. O que o SplitHub precisa fazer e o que fecha cada caso estão na tabela.
+   - **O MassGen provoca, uma vez, na próxima oportunidade:** T02 (o pedido da CBS conclui com o link vencido; o download responde 410), T03 (o pedido da CBS termina em `ERRO APURACAO-408`, e o aviso leva o erro), T05 (uma operação do Delta sai em dois arquivos), T06 (um dia com lançamentos no IBS fica sem Delta e sem aviso), T07 (a primeira linha do dia some do Delta e o hash continua contando com ela) e T09 (a primeira resposta 2xx do aviso é descartada e o mesmo aviso se repete, em cada ente). *Provocar de novo* arma o caso outra vez.
+   - **Nascem do uso:** T01 (o documento da CBS que muda em dois dias volta em dois tíquetes), T04 (o Arquivo Manual de um período já entregue repete os lançamentos do Delta) e T08 (abaixo).
+   - *Barramento › Casos provocados pelo MassGen* lista onde cada provocação caiu.
+8. **Nota fora do SplitHub (T08):** na aba *Notas*, marque as notas que o SplitHub não importou e use *Fora do SplitHub*. Elas não saem por roteiro nem por envio, a menos que você marque **Incluir não importadas**. O plano só as usa com o T08 ligado.
+9. **Enviar eventos (sob demanda):** escolha as notas e os tipos, agrupados por ente: E-IBS-01 a E-IBS-24 e os 26 da CBS (E-CBS-D01 a D07, C01 a C12, P01 a P04, R01 a R03), com o percentual nos parciais. O que falta antes entra sozinho como pré-requisito (D-MG-13); a prévia mostra o que entra e o que não cabe, com o motivo. *Executar e enviar* fecha o dia simulado na hora (D-MG-14). Só root pode **forçar** (ignorar ordem, unicidade, saldo e data) para testar a reação do SplitHub.
+10. **Relógio:** *Fechar o dia* processa os dois entes. No IBS, gera o Delta com os eventos planejados, gera o Arquivo Manual que o SplitHub pediu e avisa o webhook. Na CBS, com a `urlRetorno` validada, abre um tíquete por endpoint que mudou e avisa sem pedido (D-MG-03); sem ela, os eventos esperam o pedido. Depois passa ao dia seguinte. *Fechar até* faz isso dia a dia até a data. O relógio não volta. Embaixo do dia, o próximo dia com evento planejado em cada ente.
 
    > **Fechar vários dias de uma vez pode deixar um link vencer.** O link da CBS vale 48 horas no relógio da POC. Se o *Fechar até* passa dessas 48 horas antes de o SplitHub baixar, o link dos primeiros dias vence e os eventos ficam *não recebido*. É a regra, e vale testar. Para a POC andar sem isso, feche um dia por vez enquanto o SplitHub baixa. O que venceu volta por pedido.
-8. **Barramento:** um painel por ente.
-   - **IBS:** a credencial, a habilitação, e as solicitações com os arquivos (o JSON do Anexo I e o ZIP).
+11. **Barramento:** um painel por ente.
+   - **IBS:** a credencial, a habilitação, e as solicitações com os arquivos (o JSON do Anexo I e o ZIP). Cada solicitação diz se é Delta ou Arquivo Manual (com o período) e qual caso foi provocado nela.
+   - **Arquivo Manual:** o SplitHub pede em `GET /v1/aassist/solicitacao/incluir`, com `cnpj`, `dataTransacaoIni` e `dataTransacaoFim`, e cancela em `DELETE /v1/aassist/solicitacao/cancelamento/{idSolic}` enquanto a solicitação está *SOLICITADA*. Veja as [regras](#decisões-do-emulador-onde-o-moc-ainda-não-define-ibs).
    - **CBS:** a credencial, a `urlRetorno` do aviso sem pedido (*Validar e salvar* faz o mesmo `HEAD` do pedido; *Desligar* volta a só pedido), e os tíquetes. Cada tíquete traz a origem (pedido ou sem pedido), a janela, o estado, o link com a validade e os downloads, e o JSON.
    - **Nos dois:** os avisos com cada tentativa e o *Reenviar aviso* (na CBS, o mesmo tíquete e o mesmo link), e as chamadas que o SplitHub fez, com o ente. *Baixar a collection* entrega a collection do Postman de cada ente com a URL e o client id da POC, sem segredo e sem scripts (D-MG-12).
 
    O link assinado e os segredos aparecem mascarados em todo lugar.
-9. **Histórico da nota:** os eventos dos dois entes na ordem dos dias. Cada evento traz a origem (roteiro, envio, pré-requisito), a situação (*planejado, disponível, avisado, recebido, não recebido, substituído*), o efeito nos campos, o aviso e os downloads.
-   - **IBS:** o efeito nos sete campos do extrato e a linha que saiu no arquivo.
+12. **Histórico da nota:** os eventos dos dois entes na ordem dos dias. Cada evento traz a origem (roteiro, envio, pré-requisito), a situação (*planejado, disponível, avisado, recebido, não recebido, substituído*), o efeito nos campos, o aviso e os downloads.
+   - **Trocar roteiro (D-MG-04):** qualquer nota troca de roteiro. Os eventos planejados viram *substituídos* e o roteiro novo entra no lugar. Se a nota já tem história, o roteiro novo continua dela: o passo que já aconteceu ou que não tem mais saldo fica de fora, e a prévia diz qual.
+   - **IBS:** o efeito nos sete campos do extrato e a linha que saiu no arquivo. Quando o mesmo lançamento veio no Delta e num Arquivo Manual (T04, T06, T07), a gaveta do evento lista todos os arquivos.
    - **CBS:** a foto do documento como ficou depois do evento e os tíquetes que a levaram. Os saldos da foto vêm com os calculados do lado do documento: saldo devedor no débito; a apropriar e saldo credor no crédito.
 
    O download pelo SplitHub é a prova de recebimento, nos dois entes.
-10. **Fim da POC:** *Configuração › Apagar a POC* (só root) leva as notas do cliente, os eventos, os arquivos, os tíquetes e os avisos. A trilha de auditoria fica. Os XMLs do cliente nunca vão para o Git.
+13. **Fim da POC:** *Configuração › Apagar a POC* (só root) leva as notas do cliente, os eventos, os arquivos, os tíquetes e os avisos. A trilha de auditoria fica. Os XMLs do cliente nunca vão para o Git.
 
 ### Rotas da Receita Federal emulada (CBS)
 
@@ -85,7 +95,9 @@ Ficam declaradas na collection e valem até o Comitê Gestor publicar:
 - **Hash do `extrato_cc`:** SHA-1 do hash anterior concatenado ao JSON da linha, lançamento a lançamento. Na operação fatiada, o cabeçalho se repete e o hash segue acumulado.
 - **Processamento Diário:** o arquivo do dia D sai às 01:30 de D+1, com validade de 90 dias; vencido sem download, a solicitação expira e o evento fica *não recebido*.
 - **MOV:** o texto exato dos exemplos do Anexo II. As leituras nossas de base de valor (E-IBS-07, 16, 18, 20, 22 e 24) aparecem na tela de envio e na collection.
-- **Arquivo Manual** (incluir e cancelar solicitação) fica para a etapa 3; a listagem já funciona.
+- **Nova Solicitação (Arquivo Manual):** um `GET` com corpo, como o MOC; quem não consegue mandar corpo num `GET` pode mandar os mesmos campos na query. Datas no formato AAAA-MM-DD.
+- **Regras do Arquivo Manual:** 2 por dia e 2 por competência no mesmo dia (*Configuração › Limites relaxados* tira o limite); o período fica numa competência só, não passa do dia simulado e não se sobrepõe a outra manual ativa (a cancelada não conta). Sai no Processamento Diário seguinte, no mesmo formato do Delta, com `tiposolicitacao` "solicitação manual"; um período sem lançamento gera um arquivo vazio. A validade fica vazia enquanto a solicitação está *SOLICITADA* e vai a 90 dias na geração.
+- **Recusas que o MOC não codifica:** na Nova Solicitação, 400 (dados), 409 (sobreposição) e 429 (limite do dia); no Cancelamento, 404 (não existe) e 409 (já processada ou não é manual). O corpo segue `{ resultado, mensagem }`.
 
 ### Decisões do emulador onde a documentação da CBS ainda não define
 
@@ -97,6 +109,7 @@ Ficam declaradas na collection da CBS e valem até a Receita Federal publicar:
 - **Janela do pedido:** 8 dias até o pedido, ou desde o dia 1 do mês na primeira coleta do endpoint. O documento entra pelo `atualizacao`, a última mudança dele, com a foto inteira.
 - **Link assinado:** `GET /download/v2/{assinatura}`, sem token, válido por 48 horas no relógio da POC. O reenvio do aviso repete o mesmo link. Vencido sem download, os eventos que nenhum outro tíquete levou ficam *não recebido*.
 - **Atendimento:** `PENDENTE`, `EM_PROCESSAMENTO` e `CONCLUIDA` em menos de um segundo, com `tEASegundos` "1". A documentação admite até 240 minutos.
+- **Aviso de erro:** o corpo é o da documentação, `{ codigoErro, mensagemErro }` (por exemplo `APURACAO-408`, no T03), sem o tíquete. Para saber qual pedido falhou, o SplitHub usa uma `urlRetorno` por pedido (um identificador na query serve) ou consulta `/situacao/{tiquete}`.
 - **Horários:** os eventos de um dia fechado entram com o `atualizacao` a partir das 10:00 desse dia.
 - **Tipo do pagamento:** 1 PCONT, 2 RAD e 3 split. A enumeração não foi publicada.
 - **Pagamento em atraso:** multa de 10% e juros de 1% do principal, só para ilustrar.
@@ -455,6 +468,8 @@ server/
     catalogo-cbs.ts  os 26 tipos da CBS, os campos da foto e os três calculados
     arquivo-cbs.ts   a foto do débito e do crédito, os registros de pagamento e recolhimento, o JSON de cada endpoint
     cbs.ts           tíquetes da CBS: seleção pela janela ou pelo dia, link assinado, vencimento, download
+    cobertura.ts     plano automático, troca de roteiro e painel de cobertura dos 59 tipos, com o XML que falta
+    casos.ts         os casos de transporte e falha (T01 a T09): ligar, armar, provocar e quando cada um fecha
   entes/       rotas dos entes emulados (/entes/ibs e /entes/cbs) e as collections do Postman
     cbs.ts           Receita Federal emulada: token, pedido, situação, download, urlRetorno e aviso
   core/        núcleo genérico: geradores, regras (JSONata), geração, conferência
@@ -466,7 +481,7 @@ server/
 packs/         pacotes de domínio (splithub.json)
 mock/          API falsa no estilo do SplitHub
 web/           interface (React + Vite)
-tests/         testes do núcleo e de ponta a ponta
+tests/         testes do núcleo e de ponta a ponta; ibs, cbs e cobertura são as três etapas da apuração assistida
 deploy/        instalador de um comando, systemd, backup, túneis do Cloudflare e Cloudflare Access, para hospedar numa VM
 .github/       verificação da implantação num Linux de verdade (x64 e ARM)
 ```
@@ -491,6 +506,16 @@ Os testes de ponta a ponta sobem o app e a API falsa e conferem:
   - o link vencido e a volta pelo pedido;
   - os roteiros só da CBS, com multa e juros;
   - a collection e o fim da POC;
+- a etapa 3 ([tests/cobertura.test.ts](tests/cobertura.test.ts)), com um lote fictício de valores redondos e um SplitHub falso que baixa o que chega, pede de novo quando o link vence ou o processamento estoura e pede o Arquivo Manual quando falta algo:
+  - o lote fecha os **59 tipos**: os 24 do IBS, os 26 da CBS e os 9 casos, cada um entregue e baixado;
+  - o plano automático e a prévia que não grava;
+  - a defasagem entre os entes, pela POC e pelo roteiro;
+  - o XML que falta, numa frase por XML (D-MG-05);
+  - os casos desligados por padrão, armados ao ligar, e cada provocação: o fatiamento (T05), o dia sem Delta (T06), a linha que falta (T07), o 2xx descartado (T09), o `APURACAO-408` (T03) e o link vencido (T02);
+  - a nota fora do SplitHub, que só sai com "incluir não importadas" (T08);
+  - as regras do Arquivo Manual, o cancelamento e a entrega no Processamento Diário seguinte (T04, T06, T07);
+  - a troca de roteiro de uma nota que já tem história;
+  - as collections dos dois entes;
 - o primeiro acesso do root, o convite, os papéis, a sessão vencida, a desativação e o bloqueio de login;
 - o cenário C-01 e os casos de borda do C-05;
 - a idempotência;
